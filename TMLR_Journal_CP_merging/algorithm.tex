@@ -1,0 +1,49 @@
+\begin{wrapfigure}[18]{r}{0.50\textwidth}
+\vspace{-20pt} 
+  \centering
+  \begin{minipage}{0.48\textwidth}
+    \begin{algorithm}[H]
+        \caption{Implementation of CP Merging}
+        \algsetup{linenosize=\small} % Adjust line number size
+        \begin{algorithmic}[1] % The [1] here means line numbers will be shown starting from 1
+            \STATE Input: Pretrained task LoRA adapters$\{\Delta_{1},\Delta_{2},..., \Delta_{N}\}$, scaling factors $\alpha$. 
+            \STATE \textbf{Output:
+            Merged weight $W_{\mathrm{MT}}$} 
+            
+            % \STATE $E=[]$ 
+
+            % \FOR{$i = 1$ to $N$} \STATE $\Delta_{i}$=Train($\mathcal{C}_{i}$, LLM)
+            % \ENDFOR
+
+            \STATE \textbf{Concatenate} the matrices: \STATE $\mathcal{T}\leftarrow
+            [\Delta_{1}|\Delta_{2}|...|\Delta_{N}]$
+
+            \STATE \textbf{CP Decomposition:}
+
+            \STATE
+            $\mathcal{T}\approx \sum_{r=1}^{R}\mathbf{a}_{r}\otimes \mathbf{b}_{r}
+            \otimes \mathbf{c}_{r}$
+            (Eq. \ref{eq:cp_decomposition})
+
+            \STATE \textbf{Compute the Task Matrix:}
+
+            \STATE
+            $\Delta_{i}\approx \sum_{r=1}^{R}a_{ir}\textbf{b}_{r}\otimes \textbf{
+             c}_{r}$
+            \quad\quad (Eq.\ref{eq:cp_form})
+
+            \STATE \textbf{Reconstruct} the merged matrix:
+
+            \STATE $\Delta \approx \sum_{r=1}^{R}\left( \sum_{i=1}^{N}a_{ir}\right
+            ) \textbf{b}_{r}\otimes \textbf{c}_{r}$ \quad (Eq.
+            \ref{eq:cp_merge})
+
+            \STATE \textbf{Construct} the merged model weights: \STATE
+            $W_{\mathrm{merged}}=W_{\text{base}}+\alpha\sum_{r=1}^{R}\left( \sum_{i=1}^{N}a_{ir}\right
+            ) \textbf{b}_{r}\otimes \textbf{c}_{r}$
+            \STATE \textbf{return} $W_{\mathrm{MT}}$
+        \end{algorithmic}
+        \label{al:factorizing}
+    \end{algorithm}
+\end{minipage}
+\end{wrapfigure}
