@@ -94,28 +94,24 @@ within=section]{prompt}[1][]{ colbacktitle=black!60, coltitle=white, fontupper=\
 
 \begin{abstract}
 
-Large language models (LLMs) are often fine-tuned for specific tasks using Low-Rank Adaptation (LoRA), an efficient method that adds small, task-specific modules called LoRA adapters to a pre-trained base model. However, a major challenge arises when merging multiple LoRA adapters trained on different data sources for a specific task: it often leads to \textit{task interference}, which refers to the redundancy or sign discrepancies found in parameters across different task models, resulting in information conflict and performance loss. SVD-based methods, such as TSV merging, attempt to reduce task interference by leveraging the geometric structure of the singular task matrix, which may prevent the identification of the optimal orthogonal basis and task updates.  This leads to a question: \textit{Does a higher-dimensional task representation merging improve multi-task performance by providing a more robust basis for task-specific singular components?} To answer this, we propose a tensor-theoretic approach using CP decomposition to lift task-specific parameters into a higher-order manifold, thereby exploiting the uniqueness properties of tensor factorizations to minimize task interference. By aggregating adapters into a third-order tensor, our method leverages the unique identifiability of CP factors to disentangle shared knowledge from task-specific features. This joint factorization naturally mitigates cross-task interference by capturing the underlying multi-linear structure of the LoRA adapters. Our extensive experiments further validate this approach, demonstrating that CP merging yields superior performance compared to existing SVD-based merging approaches.
+Low-Rank Adaptation (LoRA) adapts a pre-trained large language model (LLM) to a task by adding a small low-rank update, and public hubs now host large libraries of such task-specific adapters. Merging several adapters into one model is an inexpensive way to obtain multi-task ability, but it suffers from \textit{task interference}: redundant or sign-conflicting updates from different tasks overwrite each other and degrade performance. SVD-based methods such as TSV merging and Knots reduce interference by operating on the singular vectors of each task matrix. Because each adapter is decomposed separately, the resulting bases are chosen independently per task, and the structure shared across tasks is never modeled explicitly. We ask whether a higher-order representation of the adapter collection provides a better basis for merging. We stack the LoRA updates of one layer into a third-order tensor and factorize it with Canonical Polyadic (CP) decomposition. All tasks share the same input-mode and output-mode factors, while a task-mode factor records how strongly each task uses each rank-one component. Under mild conditions, CP factors are essentially unique, which lets the decomposition separate shared directions from task-specific contributions; the merged update is then obtained by summing the task-mode coefficients. On Phi-3, Mistral-7B, and LLaMA-7B, CP merging improves over the strongest SVD-based baseline by 3.19 Rouge-L on 10 held-in Flan tasks, 5.69 Rouge-L on 3 held-out Flan tasks, 1.0 accuracy point on 10 zero-shot benchmarks, and 2.2 accuracy points on GSM8K-hard skill composition, while running an order of magnitude faster than TSV merging and Knots.
 
 \end{abstract}
 
 \section{Introduction}
 
-    Parameter‑efficient fine‑tuning (PEFT) methods have emerged as practical
-    alternatives to full fine‑tuning for adapting large language models (LLMs)
-    to downstream tasks \citep{hu2021lora,houlsby2019parameter,lester2021power}.
-    Among these, LoRA adapters \citep{hu2021lora} have gained particular
-    popularity by learning low‑rank additive updates that efficiently capture
-    task‑specific knowledge. Recent studies \citep{sheng2023s,ostapenko2024towards,huang2023lorahub,su2024mixture,page2023multi}
-    have shown that LoRA can be fine‑tuned for diverse tasks—such as
-    summarization, question answering, and classification—resulting in a set of pre-trained LoRA adapters (LoRA library).
+    Parameter-efficient fine-tuning (PEFT) adapts large language models (LLMs)
+    to downstream tasks while updating only a small fraction of their parameters
+    \citep{hu2021lora,houlsby2019parameter,lester2021power}.
+    LoRA \citep{hu2021lora} is the most widely used PEFT method: it learns a
+    low-rank additive update for each adapted weight matrix. Because LoRA
+    adapters are small, they are routinely trained for many individual tasks,
+    such as summarization, question answering, and classification, and collected
+    into \textit{LoRA libraries} \citep{sheng2023s,ostapenko2024towards,huang2023lorahub,su2024mixture,page2023multi}.
 
+    Model hubs such as Hugging Face make these adapters easy to share and reuse, which raises the question of how to combine them. Model merging combines several specialized models into a single model that handles all of their tasks \citep{wortsman2022model}. Its central difficulty is task interference: a parameter update optimized for one task can conflict with the update optimized for another \citep{yadav2023ties}. Many merging methods have been proposed to reduce this interference \citep{davari2024model,ilharco2022editing,matena2022merging,wortsman2022model,yadav2023ties,yu2024language,lu2024twin,yang2026model,deep2024della,miyano2025adaptive,chen2025black}. Methods such as Fisher Merging and TIES-Merging operate on the full parameter space and resolve conflicts weight by weight, using Fisher information or parameter magnitude to decide which weights to keep. LoRA updates have a different structure. Each update is a low-rank product $BA$ that lies in a small subspace of the weight space, so merging LoRA adapters is primarily a problem of aligning subspaces rather than reaching consensus on individual weights. \citet{stoica2025model} make this concrete: using pairwise centered kernel alignment (CKA) \citep{kornblith2019similarity}, they show that the updates of fully fine-tuned models are highly aligned across tasks, whereas the corresponding LoRA updates are considerably less aligned.
 
-
-    The emergence of model hubs, such as Hugging Face, has further simplified the sharing and reuse of pre-trained and fine-tuned models. These platforms enable collaborative and multi-task learning by allowing users to easily acquire and extend existing models. Within this context, model merging—which aims to combine multiple specialized models into a single model capable of handling diverse tasks—has attracted significant attention \citep{wortsman2022model}. However, merging task-specific models often introduces task interference, since parameter updates optimized for one task may conflict with those optimized for another \citep{yadav2023ties}. To mitigate this issue, a variety of model merging methods have been proposed \citep{davari2024model,ilharco2022editing,matena2022merging,wortsman2022model,yadav2023ties,yu2024language,lu2024twin,yang2026model,deep2024della,miyano2025adaptive,chen2025black}.However, traditional methods such as Fisher Merging or TIES-Merging operate on the full parameter space of the model. These methods typically focus on resolving conflicts by calculating weight-level importance or trimming "redundant" parameters based on their magnitude or Fisher information. While effective for fully fine-tuned models, they assume that all weights contribute equally to the underlying representation. Unlike full-model merging, merging LoRA adapters involves combining highly compressed, low-rank matrices ($BA$) that reside in specific subspaces of the original model. The challenge here is not just weight consensus, but subspace alignment. In addition, Prior work has observed that LoRA adapter weights exhibit weaker alignment compared to fully fine-tuned model weights~\citep{stoica2025model}.  By comparing the pairwise centered kernel alignment (CKA) \cite{kornblith2019similarity} between full models and their equivalent LoRA fine-tuned counterparts.  They observe that the full models have very high CKA (the fine-tuning updates have high alignment for task updates) while LoRA exhibits considerably lower CKA.
-    
-    
-    
-    Consequently, applying existing model merging techniques directly to LoRAs often yields suboptimal results. To address this, researchers have explored LoRA-specific merging strategies, such as singular value decomposition (SVD)–based methods. TSV merging \citet{gargiulo2025task} attempt to reduce the task interference by building the \textit{singular task vector} using SVD. The overlapping singular vectors suggest shared features in the weight space across tasks, which can introduce interference when models are merged. Then they explicitly address task interference by leveraging the geometric structure of singular vectors to minimize interactions between task-specific parameters. Knots \citet{stoica2025model} build upon the SVD to transfer the task updates of different LoRA models into a shared space. They first concatenate all task-updates for a layer, and then decompose the result with the SVD to obtain $U\Sigma V^T$, U are singular vectors that form the \textit{orthonormal basis} for a shared representation between all tasks. The non-negative diagonal values in $\Sigma$ represent the scale associated with each basis vector, and then the Knots can apply the existing merging methods to the $V^T$ task-matrices and obtain a $V^{(merged)}$. Despite the success of these SVD-based methods, these SVD-based merging approaches (e.g., \texttt{TSV-merging}, \texttt{Knots}) treat the LoRA adapters merely as matrices, which may prevent the identification of the optimal orthogonal basis and task updates, and as a result, limit their ability to effectively reduce cross-task interference. So there leads a natural question: \textit{Does a higher-dimensional task representation merging improve multi-task performance by providing a more robust basis for task-specific singular components?} 
+    As a result, merging methods designed for full fine-tuning often perform poorly when applied directly to LoRA adapters, and recent work has turned to LoRA-specific methods based on singular value decomposition (SVD). TSV merging \citep{gargiulo2025task} decomposes each task matrix with SVD and treats overlapping singular vectors across tasks as a source of interference; it then decorrelates these \textit{task singular vectors} before merging. Knots \citep{stoica2025model} concatenates the task updates of a layer, computes a single SVD $U\Sigma V^{\top}$, and uses the left singular vectors $U$ as an orthonormal basis shared by all tasks. Existing merging rules are then applied to the task-specific blocks of $V^{\top}$ to obtain $V^{(\text{merged})}$. In both methods, the collection of adapters is handled as a set of matrices, either decomposed one at a time or concatenated along one dimension. The task identity therefore never enters the factorization as a separate mode, and the basis cannot express which components are shared by several tasks and which belong to one. This motivates the question we study: \textit{does representing the adapters as a higher-order object give a better basis for separating shared and task-specific components, and does it improve multi-task performance after merging?}
 %     Recently, the advent of model hubs such as Hugging Face has simplified the diffusion
 % of pre-trained and fine-tuned models, opening new opportunities for collaborative and multi-task
 % learning by allowing users to acquire and build upon existing models easily. In this context, model
@@ -142,76 +138,62 @@ Large language models (LLMs) are often fine-tuned for specific tasks using Low-R
  
     
     
-To answer this question, we treat the collection of LoRA adapters as a unified structure by concatenating them into a third-order tensor and then performing tensor decomposition. Formally, given $N$ tasks, each associated with a LoRA adapter $\Delta_{i} \in \mathbb{R}^{d_{in} \times d_{out}}$, we concatenate all adapters to construct a third-order tensor. Unlike prior approaches that apply independent SVD-based decompositions to mitigate task interference \citep{stoica2025model,gargiulo2025task}, we employ Canonical Polyadic (CP) decomposition to jointly factorize all task-specific matrices. CP decomposition expresses a tensor as a sum of rank-one components, thereby disentangling shared and task-specific patterns. This joint factorization not only helps reduce task interference but also preserves task-relevant information more effectively. Finally, we merge the LoRA adapters by summing over the task dimension.
-    
+We answer this question by treating the adapters of a layer as a single tensor. Given $N$ tasks with LoRA updates $\Delta_{i} \in \mathbb{R}^{d_{in} \times d_{out}}$, we stack the updates along a new task mode to form a third-order tensor and factorize it with Canonical Polyadic (CP) decomposition. CP decomposition writes the tensor as a sum of rank-one components. Every component has an input-mode and an output-mode factor shared by all tasks, together with a task-mode coefficient vector that records how much each task uses that component. A component with large coefficients for many tasks captures shared structure, while a component dominated by one task captures task-specific structure. In contrast to TSV merging and Knots \citep{gargiulo2025task,stoica2025model}, this factorization is computed jointly over all tasks. We obtain the merged update by summing the task-mode coefficients of each component.
 
-To rigorously evaluate our CP merging approach, we conduct experiments on 10 held-in tasks and 3 held-out multi-tasks from the Flan datasets (Based on Phi-3 3B)~\cite{arnob2025exploring}, as well as on 10 out-of-domain downstream tasks (Based on Phi-3 3B and Mistral-7B)~\cite{ostapenko2024towards} and skill-composition tasks (Based on LLama 7B)~\cite{prabhakar2024lora}. For 10 held-in Flan tasks, CP merging outperforms strong SVD-based baselines by +3.19 Rouge-L. For the held-out Flan tasks, CP merging achieves an improvement of +5.69 Rouge-L over the SVD baseline. Interestingly, we observe that uniform merging yields the best performance among all methods on the held-out evaluation. For the 10 out-of-domain (zero-shot) tasks, CP merging surpasses SVD baselines by an average of +1.0\%, while uniform merging also shows competitive performance in this setting. Finally, in the skill-composition evaluation, CP merging outperforms SVD-based methods by +2.0\% accuracy on the challenging math-hard task.
+We evaluate CP merging on 10 held-in and 3 held-out Flan tasks with Phi-3~\citep{arnobexploring}, on 10 out-of-domain zero-shot benchmarks with Phi-3 and Mistral-7B~\citep{ostapenko2024towards}, and on math-and-code skill composition with LLaMA-7B~\citep{prabhakar2025lora}. On the held-in Flan tasks, CP merging improves over the strongest SVD-based baseline by 3.19 Rouge-L, and on the held-out tasks by 5.69 Rouge-L. On the held-out tasks, uniform merging obtains the highest score of all methods (61.13 vs.\ 60.15 for CP merging). On the zero-shot benchmarks, CP merging improves over TSV merging by 1.0 accuracy point on average, and uniform merging is again competitive. In skill composition, CP merging improves accuracy on GSM8K-hard by 2.2 points over the best SVD-based method.
 
-    In summary, our contributions are:
+Our contributions are as follows:
 
 \begin{itemize}
-    \item We propose a CP merging approach that mitigates task interference in LoRA merging by jointly modeling shared and task-specific components in a unified manner.  
+    \item We propose CP merging, which stacks LoRA adapters into a third-order tensor and factorizes them jointly with CP decomposition, so that shared and task-specific components are represented in one basis.
 
-    \item Experimental results show that CP merging substantially improves 10 held-in performance (+3.19 Rouge-L), 3 held-out tasks (+5.69 Rouge-L), and skill composition tasks (2\% accuracy) over SVD-based methods. This demonstrates that CP decomposition effectively disentangles task-specific factors from shared factors, thereby reducing interference while preserving essential task information.  
+    \item We show that CP merging improves over SVD-based merging on held-in Flan tasks (+3.19 Rouge-L), held-out Flan tasks (+5.69 Rouge-L), zero-shot benchmarks (+1.0 accuracy), and GSM8K-hard skill composition (+2.2 accuracy), and that it is an order of magnitude faster to compute.
+
+    \item We extend the singular task interference score of \citet{gargiulo2025task} to CP factors and use it, together with cross-layer analyses of the CP factors, to characterize where interference arises across layers and projections.
 \end{itemize}
 
 
 \section{Related Works}
 
     \noindent
-    \textbf{PEFT}. Parameter-efficient fine-tuning (PEFT) methods facilitate
-    efficient adaptation of LLMs without updating all the training parameters, thereby
-    reducing the memory and computation cost \citep{adapter_layer,zhang2024llama,zaken2022bitfit,guo2021parameter,li2021prefix,lester2021power}.
-    \citet{hu2021lora} proposes a method named LoRA that parameterizes
-    incremental weights $\Delta$ as a low-rank matrix by the product of the down
-    projector matrix and up projector matrix. \citet{zhang2023adaptive} proposes
-    Adaptive Low-Rank Adaptation (AdaLoRA), a new method that dynamically allocates
-    the parameter budget among weight matrices during LoRA-like fine-tuning \citep{zhang2023adaptive}.
-    \citet{liu2024dora} introduces a new approach DoRA to investigate the
-    inherent differences between full fine-tuning and LoRA.
+    \textbf{Parameter-efficient fine-tuning}. PEFT methods adapt LLMs
+    without updating all of their parameters, which reduces memory and
+    computation cost \citep{adapter_layer,zhang2024llama,zaken2022bitfit,guo2021parameter,li2021prefix,lester2021power}.
+    LoRA \citep{hu2021lora} parameterizes the weight update $\Delta$ as the
+    product of a down-projection and an up-projection matrix of low rank.
+    AdaLoRA \citep{zhang2023adaptive} allocates the parameter budget
+    dynamically across weight matrices during fine-tuning, and DoRA
+    \citep{liu2024dora} decomposes weights into magnitude and direction to
+    narrow the gap between LoRA and full fine-tuning.
 
     \noindent
-    \textbf{LoRA library}.  In a multi-task scenario, LoRA adapters can be fine-tuned for diverse tasks-resulting in a set of pre-trained LoRA libraries. 
-    AdapterSoup \citet{chronopoulou2023adaptersoup} trains
-    each adapter for each domain and performs weight-space averaging of adapters
-    trained on different domains. \cite{huang2023lorahub} introduces LoRAhub to
-    aggregate the LoRA modules trained on diverse tasks. AdapterFusion \citep{pfeiffer2021adapterfusion}
-    proposes a two-stage algorithm that leverages knowledge from multiple tasks.
-    Similar to LoRAhub, a group of task-specific adapters learn to encapsulate
-    the task-specific information, and in the second stage, a fusion layer
-    combines the trained adapters. \citet{ostapenko2024towards} propose a model-based
-    clustering library building methods and an Arrow routing function to reuse
-    the LoRA library. \citet{zhao2024retrieval} propose a retrieval-augmented
-    mixture of LoRA Experts (RAMoLE) that adaptively retrieves and composes
-    multiple LoRAs according to the input prompts. 
+    \textbf{LoRA libraries}. In multi-task settings, LoRA adapters trained on many individual tasks form a LoRA library.
+    AdapterSoup \citep{chronopoulou2023adaptersoup} trains one adapter per
+    domain and averages the adapters in weight space. LoraHub \citep{huang2023lorahub}
+    composes LoRA modules trained on diverse tasks. AdapterFusion \citep{pfeiffer2021adapterfusion}
+    first trains task-specific adapters and then learns a fusion layer that
+    combines them. \citet{ostapenko2024towards} build libraries by clustering
+    adapters according to their parameters and reuse them with the Arrow
+    routing function. RAMoLE \citep{zhao2024retrieval} retrieves and composes
+    LoRA experts according to the input prompt.
 
     \noindent
-    \textbf{Model Merging}. Model merging integrates the weights of multiple
-    task-specific models into a single multi-task model ~\citep{davari2024model,ilharco2022editing,matena2022merging,wortsman2022model,yadav2023ties,yu2024language,lu2024twin,yang2026model,deep2024della,miyano2025adaptive,chen2025black}. Early methods like Model Soups~\cite{wortsman2022model,choi2024revisiting} average the weights of multiple models fine-tuned with different hyperparameters. \citet{matena2022merging} \texttt{Fisher Merging} proposes to use the Fisher information matrix to merge the various models. \citet{ilharco2022editing} presents the \texttt{task vectors}, which are the weight
-    differences between pretrained models and the finetuned models. Then they merge 
-    the task vectors to obtain a merged multi-task model instead of the whole model.  To reduce the task interference during merging, \texttt{Ties}
-    \cite{yadav2023ties} reduces the parameter redundancy by selecting the top-$k$
-    most significant parameters and then constructing a sign vector based on the
-    majority sign. \texttt{DARE} \cite{yu2024language} randomly drop delta parameters with a ratio $p$ and rescales the remain parameters by $1/(1-p)$ to reduce the task interference.  \texttt{RegMean, RegMean++} \cite{reg_mean,nguyen2025regmean++} addresses the model merging by minimizing prediction differences between the merged model and the expert model. \texttt{TSV} \cite{gargiulo2025task} shows
-    that SVD decomposition can reduce the parameter redundancy, and merging the singular
-    values can compress the parameters and reduce the task interference. \texttt{Knots}
-    \citet{stoica2025model} uses the SVD to jointly transform the weights of
-    different LoRA models into a shared space. \texttt{ISO-C}
-    \cite{marczak2025no} propose an isotropic merging framework that flattens
-    the isotropic merging framework to flatten singular value spectrum of the
-    task matrix, enhancing alignment and reducing task interference. Instead of
-    decomposing the task matrix separately, we concatenate the task matrix into a
-    third-order tensor and then decompose it using CP decomposition.
+    \textbf{Model merging}. Model merging combines the weights of multiple
+    task-specific models into a single multi-task model \citep{davari2024model,ilharco2022editing,matena2022merging,wortsman2022model,yadav2023ties,yu2024language,lu2024twin,yang2026model,deep2024della,miyano2025adaptive,chen2025black}. Model Soups \citep{wortsman2022model,choi2024revisiting} average models fine-tuned with different hyperparameters. Fisher Merging \citep{matena2022merging} weights parameters by their Fisher information. Task Arithmetic \citep{ilharco2022editing} defines a \textit{task vector} as the difference between fine-tuned and pre-trained weights and merges models by adding task vectors. Several methods target interference directly. TIES-Merging \citep{yadav2023ties} keeps the top-$k$ parameters by magnitude and resolves sign conflicts by majority vote. DARE \citep{yu2024language} randomly drops delta parameters with ratio $p$ and rescales the rest by $1/(1-p)$. RegMean and RegMean++ \citep{reg_mean,nguyen2025regmean++} minimize the difference between the predictions of the merged model and those of the individual experts. A recent line of work operates on singular vectors. TSV merging \citep{gargiulo2025task} shows that each task matrix is effectively low-rank and reduces interference by decorrelating singular vectors across tasks. Knots \citep{stoica2025model} uses a joint SVD to map different LoRA updates into a shared space before merging. ISO-C \citep{marczak2025no} flattens the singular value spectrum of the merged task matrix to improve subspace alignment. All of these methods decompose matrices. CP merging instead stacks the task matrices into a third-order tensor and decomposes them jointly.
 
 \section{Preliminaries}
 
 \subsection{Pre-trained Models and LoRA Parameterization} 
-Let $W_{\text{base}} \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$ denote the pre-trained weight matrix for a given layer of a neural network. When adapting the model to a downstream task, Low-Rank Adaptation (LoRA) injects trainable rank-decomposition matrices while keeping $W_{\text{base}}$ frozen. The weight update is parameterized as $\Delta W = B A$, where $B \in \mathbb{R}^{d_{\text{out}} \times r}$ and $A \in \mathbb{R}^{r \times d_{\text{in}}}$, with the rank constrained such that $r \ll \min(d_{\text{in}}, d_{\text{out}})$. The forward pass for an input feature $x \in \mathbb{R}^{d_{\text{in}}}$ is thus modified to $y = (W_{\text{base}} + \alpha\Delta W)x$, where $\alpha$ is the scaling factor of the LoRA adapter.  For notational simplicity, we omit layer-specific indices. However, all the following definitions and merging operations are applied layer-wise across the entire architecture.
+Let $W_{\text{base}} \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$ denote the pre-trained weight matrix for a given layer of a neural network. When adapting the model to a downstream task, Low-Rank Adaptation (LoRA) injects trainable rank-decomposition matrices while keeping $W_{\text{base}}$ frozen. The weight update is parameterized as $\Delta W = B A$, where $B \in \mathbb{R}^{d_{\text{out}} \times r}$ and $A \in \mathbb{R}^{r \times d_{\text{in}}}$, with the rank constrained such that $r \ll \min(d_{\text{in}}, d_{\text{out}})$. The forward pass for an input feature $x \in \mathbb{R}^{d_{\text{in}}}$ becomes $y = (W_{\text{base}} + \alpha\Delta W)x$, where $\alpha$ is the LoRA scaling factor. We omit layer indices for readability; all definitions and merging operations below are applied independently to every adapted layer.
 
 \subsection{Gradient-Free Model Merging}
-We consider a scenario where a single pre-trained model is independently fine-tuned on $K$ distinct tasks using LoRA. This yields a pool of $K$ task-specific models. For any given layer, the weights of the $k$-th fine-tuned model are defined as:$$W_k = W_{\text{base}} + \alpha \Delta W_k$$where $\Delta W_k$ represents the task-specific LoRA update learned during the fine-tuning of task $k$.
+A single pre-trained model is fine-tuned independently with LoRA on $K$ tasks, which yields $K$ task-specific models. For a given layer, the weights of the $k$-th model are
+$$W_k = W_{\text{base}} + \alpha \Delta W_k,$$
+where $\Delta W_k$ is the LoRA update learned for task $k$.
 
-Our objective is to fuse the parameters of the $K$ fine-tuned models into a single, unified model capable of solving all tasks. We focus on gradient-free approaches, which are highly data-efficient and enable on-the-fly merging without requiring access to the original training data. Existing gradient-free methods merge models by linearly combining the task-specific updates. For a given layer, the weight matrix of the merged model is computed as:$$W_{\text{merged}} = W_{\text{base}} + \alpha\sum_{k=1}^K \Delta W_k$$
+Our goal is to combine the $K$ models into a single model that solves all tasks. We consider gradient-free merging, which requires no access to the original training data and can be performed on the fly. The simplest gradient-free rule adds the task-specific updates:
+$$W_{\text{merged}} = W_{\text{base}} + \alpha\sum_{k=1}^K \Delta W_k.$$
+The methods we compare differ in how they transform the updates $\Delta W_k$ before this combination.
 
 % where $\lambda_k \ge 0$ is a unique scaling coefficient assigned to the $k$-th task. The core challenge in gradient-free model merging is selecting the optimal set of scaling coefficients $\{\lambda_k\}_{k=1}^K$ that maximizes the combined performance of the merged model across all available data.
 
@@ -249,20 +231,15 @@ Our objective is to fuse the parameters of the $K$ fine-tuned models into a sing
         \label{fig:svd_cp}
     \end{wrapfigure}
 
-    To analyze the interplay between multiple LoRA adapters, we leverage the framework of tensor decomposition.  Tensor decomposition aims to approximate a tensor through a set of low-rank
-    factors with diverse applications. We specifically focus on the Canonical Polyadic Decomposition (CPD), which was originally introduced by \citet{hitchcock1927expression,hitchcock1928multiple} as a method to represent a tensor as a sum of a minimum number of rank-one tensors. CPD (Fig. \ref{fig:svd_cp})is often considered a special case of the more general Tucker Decomposition \citep{de2000multilinear,tucker1966some}, which decomposes a tensor into a core tensor multiplied by a factor matrix along each mode. While Tucker decomposition offers high flexibility, we utilize CPD in this work because its uniqueness properties—under mild conditions—allow for the identifiable isolation of task-specific information, which is critical for mitigating task interference. In this way, a high-order tensor can be uniquely represented as the
-    sum of a set of rank-one tensors. Given a third-order tensor $\mathcal{T}\in\mathbb{R}
-    ^{d\times r\times N}$, the CP decomposition is expressed as:
+    We model the interaction between LoRA adapters with tensor decomposition, which approximates a tensor by a set of low-rank factors. We use the Canonical Polyadic Decomposition (CPD), introduced by \citet{hitchcock1927expression,hitchcock1928multiple}, which represents a tensor as a sum of a minimal number of rank-one tensors (Fig.~\ref{fig:svd_cp}). CPD is a special case of the Tucker decomposition \citep{de2000multilinear,tucker1966some}, which multiplies a core tensor by a factor matrix along each mode. Tucker decomposition is more flexible, but its factors are not unique. We use CPD because, under mild conditions, its rank-one components are unique up to scaling and permutation, so the task-mode factors identify how each task contributes to each component. Given a third-order tensor $\mathcal{T}\in\mathbb{R}
+    ^{I_1\times I_2\times I_3}$, the CP decomposition of rank $R$ is
     \begin{equation}
-        \label{eq:cp_decomposition}\mathcal{T}=\sum_{i=1}^{R}\lambda_{i}\mathbf{u}
-        _{i}\otimes \mathbf{v}_{i}\otimes \mathbf{s}_{i}
+        \label{eq:cp_general}\mathcal{T}=\sum_{i=1}^{R}\lambda_{i}\mathbf{u}
+        _{i}\otimes \mathbf{v}_{i}\otimes \mathbf{s}_{i},
     \end{equation}
-
-   
-    where $R$ is the rank of CP decomposition. $\lambda_{i}$ is the scaling weight.
-    $\mathbf{u}_{i}$, $\mathbf{v}_{i}$ and $\mathbf{s}_{i}$ are the factor vectors
-    corresponding to the three modes of $\mathcal{T}$. The operator $\otimes$
-    denotes the outer product.
+    where $\lambda_{i}$ is the weight of the $i$-th component,
+    $\mathbf{u}_{i}$, $\mathbf{v}_{i}$, and $\mathbf{s}_{i}$ are the factor vectors
+    of the three modes of $\mathcal{T}$, and $\otimes$ denotes the outer product.
 
 
 \section{Method}
@@ -270,71 +247,65 @@ Our objective is to fuse the parameters of the $K$ fine-tuned models into a sing
         \small
         \centering
         \includegraphics[width=0.99\linewidth]{fig/CP_merging.pdf}
-        \caption{1) LoRA adapter from various tasks, each LoRA adapter is
-        trained individually. 2) LoRA library aims to leverage the plug-in/out
-        nature of LoRAs to offer the ability to add or remove knowledge from
-        LLMs. 3) CP merging: we stack the
-        LoRA into a third-order tensor and conduct the CP merging.}
+        \caption{Overview of CP merging. (1) A LoRA adapter is trained
+        independently for each task. (2) The adapters form a LoRA library whose
+        modules can be added to or removed from the LLM. (3) CP merging stacks
+        the adapters of a layer into a third-order tensor, factorizes it with CP
+        decomposition, and merges the adapters over the task mode.}
         \label{fig:factorizing_lib}
     \end{figure*}
     \subsection{CP Merging}
     \paragraph{Task Singular Vectors}
-    \citep{gargiulo2025task} use SVD to decompose the layer task matrices and
-    term the obtained singular vectors \textit{Task Singular Vectors (TSV)},
-    revealing low-rank properties and deeper insight into the inter-task
-    interactions. Given two tasks $i$ and $j$, the tasks matrix $\Delta_{i}$ and
-    $\Delta_{j}$ can written as:
+    \citet{gargiulo2025task} decompose each layer-wise task matrix with SVD and
+    call the resulting singular vectors \textit{task singular vectors} (TSVs).
+    TSVs expose the low-rank structure of each task matrix and make the
+    interaction between tasks measurable. For two tasks $i$ and $j$, the task
+    matrices $\Delta_{i}$ and $\Delta_{j}$ are decomposed as
 
     \begin{align}
         \Delta_{i} & = U_{i}\Sigma_{i}V_{i}^{\top}, \quad \Delta_{j}= U_{j}\Sigma_{j}V_{j}^{\top}
     \end{align}
 
-    where $U_{i}$, $U_{j}$ are the left singular vectors and $V_{i}$, $V_{j}$ are
-    the right singular vectors. $\Sigma_{i}$,$\Sigma_{j}$ are diagonal matrices
-    of singular values. As shown in Fig. \ref{fig:svd_cp}, we can interpret SVD as
-    a sum of rank-one matrices. For each task $i$, we get the best approximation
-    of each task matrix $\Delta_{i}$ by retaining only the top-$k$ singular values
-    and their corresponding vectors:
+    where $U_{i}$ and $U_{j}$ contain the left singular vectors, $V_{i}$ and $V_{j}$
+    contain the right singular vectors, and $\Sigma_{i}$ and $\Sigma_{j}$ are diagonal
+    matrices of singular values. As shown in Fig.~\ref{fig:svd_cp}, SVD expresses a
+    matrix as a sum of rank-one matrices. Keeping the top-$k$ singular values and
+    their vectors gives the best rank-$k$ approximation of each task matrix:
 
     \begin{equation}
         \hat{\Delta}_{i}= \sum_{j=1}^{k}\sigma_{j}^{i}\, \mathbf{u}_{j}^{i}\otimes
         {\mathbf{v}_j^i}.
     \end{equation}
     \input{algorithm}
-    where $\hat{\Delta}_{i}$ is the low-rank approximation of the task matrix
-    for task $i$, obtained using the top-$k$ singular values $\sigma_{i,j}$,
-    left singular vectors $\mathbf{u}_{i,j}$ and right singular vectors
-    $\mathbf{v}_{i,j}$. \texttt{Knots} conduct the SVD decomposition individually to obtain the right singular matrix $[V_1,V_2,...,V_N]$ and then merge the right singular matrix to obtain a merged matrix $V^{(\text{merged})}$. The final task matrix can be computed by: $\ Delta W_{j}^{(\text{merged})} = U\Sigma[V^{(\text{merged})}]^T$. \texttt{TSV merging} decomposes the LoRA adapters individually and then concatenates the left singular matrix $[U_1,U_2,...,U_N]$ and right singular matrix $[V_1,V_2,...,V_N]$. We notice that SVD decomposes the task adapter separately, leading to independent choices of SVD dimensions. To address this, we propose a more general global decomposition 
-    using Canonical Polyadic (CP) decomposition, which takes all the LoRAs together as a tensor input. 
+    where $\hat{\Delta}_{i}$ is the rank-$k$ approximation of $\Delta_{i}$, and
+    $\sigma_{j}^{i}$, $\mathbf{u}_{j}^{i}$, and $\mathbf{v}_{j}^{i}$ are its $j$-th
+    singular value, left singular vector, and right singular vector.
+    \texttt{Knots} computes an SVD $U\Sigma[V_1,V_2,\ldots,V_N]^{\top}$ of the concatenated task updates, merges the task-specific blocks $V_i$ into $V^{(\text{merged})}$, and reconstructs the merged update as $\Delta W^{(\text{merged})} = U\Sigma[V^{(\text{merged})}]^{\top}$. \texttt{TSV merging} decomposes each adapter separately and concatenates the left singular matrices $[U_1,U_2,\ldots,U_N]$ and right singular matrices $[V_1,V_2,\ldots,V_N]$. In TSV merging, the singular vectors of each task are therefore chosen without reference to the other tasks. CP merging instead decomposes all adapters jointly by treating them as one tensor.
 
     \paragraph{Representing all adapters as a Third-Order Tensor}
     
-    We consider the task adapters $\Delta_{i}$ for all tasks $i$ as slices of a
-    third-order tensor $\mathcal{T}$, where the dimensions could be interpreted
-    as (tasks, input dimension, output dimension). Let use denote this tensor $\mathcal{T}
-    \in\mathbb{R}^{d_{in}\times d_{out}\times N}$ where $N$ is the number of tasks,
-    $d_{in}, d_{out}$ are the dimensions of each task matrix $\Delta_{i}$. Each $\Delta
-    _{i}$ (a matrix of size $d_{in}\times d_{out}$) is a frontal slice of $\mathcal{T}$
-    along the task mode. So, we can concatenate the $\Delta_{i}$ matrices along the
-    task dimension to form $\mathcal{T}$.
+    We treat the task matrices $\Delta_{i}$ as slices of a third-order tensor
+    $\mathcal{T}\in\mathbb{R}^{d_{in}\times d_{out}\times N}$, whose modes
+    correspond to the input dimension, the output dimension, and the $N$ tasks.
+    Each $\Delta_{i}\in\mathbb{R}^{d_{in}\times d_{out}}$ is the $i$-th frontal
+    slice of $\mathcal{T}$, so $\mathcal{T}$ is obtained by stacking the
+    $\Delta_{i}$ along the task mode.
 
-    
     \paragraph{CP Decomposition Form}
 
-    In CP decomposition, the tensor $\mathcal{T}$ is approximated as a sum of rank-one
-    tensors:
+    CP decomposition approximates $\mathcal{T}$ by a sum of $R$ rank-one tensors:
 
     \begin{equation}
-        \label{eq:cp_decomposition}\mathcal{T}\approx \sum_{r=1}^{R}\lambda_i\mathbf{a}_{r}
-        \otimes \mathbf{b}_{r}\otimes \mathbf{c}_{r}
+        \label{eq:cp_decomposition}\mathcal{T}\approx \sum_{r=1}^{R}\lambda_r\,\mathbf{b}_{r}
+        \otimes \mathbf{c}_{r}\otimes \mathbf{a}_{r},
     \end{equation}
 
-    where $R$ is the number of components (analogous to $k$ in SVD), $\mathbf{a}_{r}
-    \in \mathbb{R}^{N}$ is a vector associated with the task mode,
-    $\textbf{b}_{r}\in \mathbb{R}^{d}_{in}$ and
-    $\textbf{c}_{r}\in \mathbb{R}^{d}_{out}$ are vectors associated with the row
-    and column modes. In our paper, we set $\lambda_i=1$, For each task $i$, the $i$-th slice $\Delta_{i}$ of
-    $\mathcal{T}$ would be:
+    where the rank $R$ plays the role of $k$ in SVD, $\mathbf{a}_{r}
+    \in \mathbb{R}^{N}$ is the task-mode factor, and
+    $\mathbf{b}_{r}\in \mathbb{R}^{d_{in}}$ and
+    $\mathbf{c}_{r}\in \mathbb{R}^{d_{out}}$ are the input-mode and output-mode
+    factors. We absorb the weights into the factors and set $\lambda_r=1$. The
+    $i$-th slice of $\mathcal{T}$ is then approximated as
 
     \begin{equation}
         \label{eq:cp_form}
@@ -342,115 +313,124 @@ Our objective is to fuse the parameters of the $K$ fine-tuned models into a sing
         \mathbf{c}_{r}
     \end{equation}
 
-    where $a_{ir}$ is the $i$-th element of $\mathbf{a}_{r}$, selecting the
-    contribution of the $r$-th component for task $i$.
+    where $a_{ir}$, the $i$-th entry of $\mathbf{a}_{r}$, is the contribution of
+    the $r$-th component to task $i$. All tasks share the rank-one matrices
+    $\mathbf{b}_{r}\otimes\mathbf{c}_{r}$ and differ only in the coefficients
+    $a_{ir}$. A component with large coefficients for many tasks represents
+    shared structure, and a component whose coefficients are concentrated on one
+    task represents task-specific structure.
 
     \paragraph{CP merging over the task mode}
 
-    To merge the $\Delta_{i}$ into a final $\Delta$, we sum over the task dimension
-    (mode-1). The merged $\Delta$ would be:
+    We merge the adapters by summing the slices over the task mode:
 
     \begin{equation}
         \Delta = \sum_{i=1}^{N}\Delta_{i}\approx \sum_{i=1}^{N}\sum_{r=1}^{R}a_{ir}
         \mathbf{b}_{r}\otimes \mathbf{c}_{r}
     \end{equation}
 
-    Since the outer product $\textbf{b}_{r}\otimes \textbf{c}_{r}$ is the same for
-    all $i$, and assuming $a_{ir}$ represents the weight of
-    component $r$ for task $i$, we can factorize this as:
+    Because $\mathbf{b}_{r}\otimes \mathbf{c}_{r}$ does not depend on $i$, the
+    sum factorizes as
     \begin{equation}
         \label{eq:cp_merge}\Delta \approx \sum_{r=1}^{R}\left( \sum_{i=1}^{N}a_{ir}
         \right) \mathbf{b}_{r}\otimes \mathbf{c}_{r}
     \end{equation}
 
     where $\sum_{i=1}^{N}a_{ir}$ is the total contribution of the $r$-th component
-    across all tasks. The final merged weights can be written as :
+    across tasks. The merged weights are
 
     \begin{equation}
-        W_{\mathrm{MT}}=W_{0}+\sum_{r=1}^{R}\left( \sum_{i=1}^{N}a_{ir}\right) \textbf
-        {b}_{r}\otimes \textbf{c}_{r}
+        W_{\text{merged}}=W_{\text{base}}+\alpha\sum_{r=1}^{R}\left( \sum_{i=1}^{N}a_{ir}\right) \mathbf
+        {b}_{r}\otimes \mathbf{c}_{r}.
     \end{equation}
+
+    Algorithm~\ref{al:factorizing} summarizes the procedure, which is applied independently to every adapted layer.
 
 \section{Experimental Results}
 
-    To test the effectiveness of our approach, we evaluate CP Merging on a
-    variety of LoRA merging methods in held-in and held-out multi-tasks based on Flan datasets (Sec. \ref{sec:held_in_out})\cite{arnobexploring,ostapenko2024towards}
-    and zero-shot task (Sec. \ref{sec:zero_shot})\cite{ostapenko2024towards} and skill composition tasks (Appendix \ref{sec:skill_composition})\cite{prabhakar2025lora}.
+    We compare CP merging with existing LoRA merging methods on held-in and held-out Flan tasks (Sec.~\ref{sec:held_in_out}) \citep{arnobexploring,ostapenko2024towards}, on zero-shot benchmarks (Sec.~\ref{sec:zero_shot}) \citep{ostapenko2024towards}, and on skill composition (Appendix~\ref{sec:skill_composition}) \citep{prabhakar2025lora}.
 
     \paragraph{Baselines}
-    We compare the following methods in the zero-shot benchmark. \textbf{BASE}: The
-    base model without adaptation. \textbf{Multi-task}: A single expert LoRA
-    finetuned on a joint training set. \textbf{Uniform}:
-    For each task, we train a LoRA adapter, then we merge the LoRA uniformly
+    We use the following baselines in all settings unless stated otherwise. \textbf{BASE}: the
+    pre-trained model without adaptation. \textbf{Multi-task}: a single LoRA
+    adapter fine-tuned on the union of the training sets. \textbf{Uniform}:
+    one LoRA adapter per task, averaged uniformly
     \citep{huang2023lorahub,chronopoulou2023adaptersoup}. \textbf{Task
-    Arithmetic (TA)} \citep{ilharco2022editing} subtracts the parameter values
-    of the pre-trained model from those of the fine-tuned models, creating a set
-    of "task-vectors." Then they linearly summed to create a merged model.
-    \textbf{Ties-merging} \citep{yadav2023ties}: Ties improves TA by resolving the
-    parameter interference between models when merging. It prunes low-magnitude
-    weights and then only averages the weights that share the dominant sign. \textbf{DARE}
-    randomly drops fine-tuned weights and rescales the remaining ones to create
-    sparse task vectors \cite{yu2024language}. \textbf{TSV merging} uses SVD decomposition to compress the LoRA and reduce the task interference based on the singular vectors \citep{marczak2025no}.  \textbf{Knots} uses the SVD to transform the weights of jointly
-    different LoRA models into a shared space \citet{stoica2025model}. \textbf{ISO-C}
-    \cite{marczak2025no} proposes an isotropic merging framework that flattens
-    the singular value spectrum of the
-    task matrix. 
+    Arithmetic (TA)} \citep{ilharco2022editing}: task vectors, defined as the
+    difference between fine-tuned and pre-trained weights, are summed linearly.
+    \textbf{Ties-merging} \citep{yadav2023ties}: low-magnitude weights are pruned,
+    and only weights that agree with the dominant sign are averaged. \textbf{DARE}
+    \citep{yu2024language}: fine-tuned weights are randomly dropped and the
+    remaining ones rescaled to obtain sparse task vectors; we combine it with
+    TA and Ties. \textbf{TSV merging} \citep{gargiulo2025task}: each task matrix
+    is compressed with SVD, and task singular vectors are decorrelated before
+    merging. \textbf{Knots} \citep{stoica2025model}: a joint SVD maps the LoRA
+    updates into a shared space before merging. \textbf{ISO-C}
+    \citep{marczak2025no}: the singular value spectrum of the merged task
+    matrix is flattened to an isotropic one.
     \input{in_domain}
     \subsection{Held-In and Held-out Multi-Tasks}
     \label{sec:held_in_out}
 
-    We conduct our experiments using the FLAN dataset \citep{longpre2023flan} and
-    sample 10 held-in and 3 held-out tasks following \citep{ostapenko2024towards,arnob2025exploring}.
-    Each task is sub-sampled to 10,000 examples. Within these samples, 1,000 are
-    allocated for validation and early stopping.
+    We use the Flan collection \citep{longpre2023flan} and
+    sample 10 held-in and 3 held-out tasks following \citet{ostapenko2024towards} and \citet{arnobexploring}.
+    Each task is sub-sampled to 10,000 examples, of which 1,000 are used for
+    validation and early stopping.
 
    
-    \begin{wrapfigure}[15]{r}{0.5\textwidth}
+    \begin{wrapfigure}[18]{r}{0.5\textwidth}
     \vspace{-15pt} 
         \small
         \centering
-        \includegraphics[width=0.50\textwidth]{fig/zero-shot-performance_category_swapped_axes.png}
-        \caption{Zero-shot results across different categories. The X-axis represents
-        the task categories.}
+        \includegraphics[width=0.50\textwidth]{fig/zero_shot_category.pdf}
+        \caption{Zero-shot accuracy on Phi-3 per task category, averaged from Table~\ref{tab:zeroshot_full}. CP merging uses the C-LoRA library; the other methods use the standard library.}
         \label{fig:performance_categories}
     \end{wrapfigure}
-    As shown in Tab. \ref{tab:in_domain_full}. The CP Merging method achieves the highest average score of 40.40, indicating it generally performs best across the tested datasets. It also has a strong 3-Held-Out score of 60.15. CP Merging is the standout performer, showing significant gains over other methods, especially in the average score and the 3-Held-Out evaluation. The BASE model provides a baseline performance, while the Oracle provides an upper bound, representing the theoretical maximum performance without any merging techniques. Ties-merging and Ties w/DARE show similar average performance (23-24). ISO-C has a significantly lower average score, similar to the BASE model's performance. TSV Merging and Knots show moderate performance, with Knots having a higher average score and a much higher 3-Held-Out score. In short, the CP Merging method appears to be the most effective overall, while Uniform merging excels on the specific 3-Held-Out evaluation. 
+    Table~\ref{tab:in_domain_full} reports Rouge-L on the 10 held-in tasks and the 3 held-out tasks. The Oracle row evaluates each task with its own LoRA adapter and serves as an upper bound for the held-in tasks (45.85). Among merging methods, CP merging obtains the highest held-in average (40.40), 3.19 points above Knots (37.21), the strongest SVD-based baseline, and 5.51 points above TSV merging (34.89). On the held-out tasks, CP merging reaches 60.15, compared with 54.46 for Knots and 45.70 for TSV merging. Uniform merging obtains the best held-out score (61.13) but a much lower held-in average (24.17), so averaging preserves general ability while losing most of the task-specific gains. Ties-merging and Ties w/DARE reach held-in averages of 23.34 and 23.93, close to uniform merging. ISO-C stays near the base model on both splits (8.20 and 16.18).
 
     \subsection{Zero-shot Experiments}
     \label{sec:zero_shot}
     \input{zero_shot}
 
-    To test the out-of-domain generalization, we evaluate CP Merging on a variety
-    of zero-shot task benchmarks. Specifically, we experiment with four broad
-    classes of zero-shot tasks: (1) \textbf{Common Sense Reasoning}: WinoGrande \citep{sakaguchi2021winogrande},
-    HellaSwag \citep{zellers2019hellaswag}, and PIQA \citep{bisk2020piqa}. 2)
-    \textbf{Question Answering}: BoolQ \cite{clark2019boolq}, OpenbookQA \cite{mihaylov2018can},
-    ARC-easy \cite{clark2018think}, and ARC-challenge \cite{clark2018think}. 3) \textbf{Coding}:
-    HumanEval \cite{chen2021evaluating}, MBPP \cite{austin2021program}. 4)
-    \textbf{General-Purpose Reasoning}: BBH \citep{suzgun2023challenging}.
+    To measure out-of-domain generalization, we evaluate the merged models on
+    zero-shot benchmarks from four categories: \textbf{common-sense reasoning}
+    (WinoGrande \citep{sakaguchi2021winogrande}, HellaSwag \citep{zellers2019hellaswag},
+    and PIQA \citep{bisk2020piqa}), \textbf{question answering} (BoolQ \citep{clark2019boolq},
+    OpenBookQA \citep{mihaylov2018can}, ARC-Easy, and ARC-Challenge \citep{clark2018think}),
+    \textbf{coding} (HumanEval \citep{chen2021evaluating} and MBPP \citep{austin2021program}),
+    and \textbf{general-purpose reasoning} (BBH \citep{suzgun2023challenging}).
+    Besides the standard library of 256 task adapters, we also merge a clustered
+    library (C-LoRA, Appendix~\ref{sec:clora}), in which each adapter is trained
+    on a cluster of similar instructions.
 
     \subsubsection{Experimental results}
 
- 
+    Table~\ref{tab:zeroshot_full} reports zero-shot accuracy on the 10 benchmarks
+    with Phi-3. The multi-task adapter (65.4\%) underperforms the base model
+    (66.6\%), which is consistent with \textit{catastrophic forgetting}, where
+    newly learned parameters overwrite knowledge acquired during pre-training
+    \citep{wang2024comprehensive}. Uniform merging of the 256-adapter library
+    reaches 67.2\%.
 
-    Tab. \ref{tab:zeroshot_full} presents the average zero-shot accuracy results
-    across 10 downstream tasks. The multi-task based on the Phi-3 model (65.4\%)
-    underperforms the base model (66.6\%), indicating that the multi-task
-    training may encounter \textit{catastrophic forgetting} issue that newly learned
-    parameters overwrite or interfere with knowledge acquired during prior training
-    \citep{wang2024comprehensive}. LoRA library with uniform merging, consisting
-    of 256 experts,  achieves accuracies of 67.2\% for Phi-3. 
+    With the C-LoRA library, TSV merging (68.1\%) outperforms Knots (66.9\%),
+    and CP merging obtains the highest average accuracy (69.1\%). CP merging is
+    best or tied for best on 7 of the 10 benchmarks, and uniform merging of the same
+    library is close behind (68.9\%). The exceptions are WinoGrande, where
+    Knots is best (71.7\%), BoolQ, where the multi-task adapter is best (87.1\%),
+    and OpenBookQA, where the base model and TSV merging with the standard
+    library reach 49.0\%. Results on Mistral-7B, reported in
+    Appendix~\ref{sec:zero_shot_mistral}, follow the same ordering, with CP
+    merging reaching 65.0\% compared with 64.9\% for uniform merging and 62.7\%
+    for TSV merging.
 
+    Figure~\ref{fig:performance_categories} breaks the results down by category,
+    averaging the accuracies in Table~\ref{tab:zeroshot_full}. Compared with TSV
+    merging on the standard library, CP merging gains 3.3 points on coding, 2.0 on
+    BBH, and 1.3 on question answering, and matches it on common-sense reasoning
+    (75.9 for both). The effect of task interference therefore appears to depend
+    on the task type.
 
-
-    Compared to the C-LoRA library, TSV Merging and Knots are comparable in overall performance. TSV Merging has an average score of 68.1, slightly better than Knots' average of 66.9. While TSV Merging and Knots perform well in some tasks, they do not consistently achieve the top scores that CP merging does. For example, TSV Merging ties for the highest score in Obqa (49.0), but its overall performance is less dominant. CP merging consistently shows superior performance. It achieves the highest average score of 69.1, outperforming all other methods. The results clearly demonstrate the effectiveness of CP merging, which consistently outperforms the other methods, including Knots and TSV Merging. With the highest average score and leading performance in multiple specific tasks, CP merging shows a more robust and effective approach to merging LoRA adapters, successfully mitigating task interference and enhancing overall model performance.
-
-    We further analyze performance across different task categories (Fig. \ref{fig:performance_categories}).
-    CP merging improves over the LoRA library with TSV merging, with the largest gains observed in question answering and coding tasks. In contrast,
-    improvements on common‑sense reasoning are minimal, suggesting that the impact
-    of task interference varies by task type.
-
-\section{Ablation Studies}
+\section{Analysis}
 
     % To investigate the reasons behind the observed improvements, we conducted further analysis.  As previously mentioned, the CP rank $R$ is a critical hyperparameter in CP decomposition. Analyzing $R$ allows us to identify the most impactful components, so we examine the influence of CP rank on performance (Sec. \ref{sec:rank_analyse}). Furthermore, we study the number of clustering approaches (Sec. \ref{sec:clustering}). We also study how CP merging can
     % reduce task interference in \textit{parameter-level} (Sec. \ref{sec:cp_merging}). Lastly, we analyze the memory requirements of different library approaches (Sec. \ref{sec:memory_usage}).
@@ -474,11 +454,10 @@ Our objective is to fuse the parameters of the $K$ fine-tuned models into a sing
     
 
 
-\subsection{Number of Tasks analysis}
+\subsection{Number of merged tasks}
 
 
-Overall, the merging methods significantly outperformed the Base model across all task sizes. The Base model consistently showed the lowest ROUGE-L scores, with scores of 11.14, 9.15, and 8.05 for 3, 5, and 10 tasks, respectively. This suggests that LoRA merging is an effective technique for improving performance. 
-CP consistently delivered the best performance on ROUGE-L scores. For 5 tasks, TSV merging and Knots merging performed equally well, both achieving a score of 54.4. The CP merging method surpasses Knots merging with a score of 57.7 for this task size. For 10 tasks, both the Knots and TSV merging methods saw a considerable drop in performance. In contrast, the CP merging method demonstrated superior robustness to an increase in the number of tasks, achieving the highest score of 40.40 in this category. The results indicate that LoRA merging is a highly effective strategy for improving model performance on multiple tasks. Specifically, the CP merging method shows the most promise, as it consistently achieves top-tier performance and exhibits greater stability as the number of tasks increases. 
+Table~\ref{tab:tasks_size} varies the number of merged Flan tasks. All merging methods improve substantially over the base model, which scores 11.14, 9.15, and 8.05 Rouge-L for 3, 5, and 10 tasks. CP merging obtains the highest score at every size. With 3 tasks it matches Knots (59.06 vs.\ 59.04) and is far ahead of TSV merging (44.87). With 5 tasks, TSV merging and Knots both reach 54.4, while CP merging reaches 57.7. With 10 tasks, all methods drop, and CP merging remains the best (40.40, compared with 37.21 for Knots and 34.89 for TSV merging). The gap between CP merging and the best SVD-based method is negligible for 3 tasks and above 3 points once 5 or more adapters are merged.
 \begin{table}[h]
     \centering
     \begin{tabular}{l|ccc}
@@ -492,7 +471,7 @@ CP consistently delivered the best performance on ROUGE-L scores. For 5 tasks, T
      CP merging & \textbf{59.06} & \textbf{57.7} & \textbf{40.40}\\
      \bottomrule
     \end{tabular}
-    \caption{The influence of the task size for LoRA merging. We select 3, 5, and 10 tasks from the Flan datasets and report the average Rouge-L scores for all the tasks.}
+    \caption{Effect of the number of merged tasks. We merge 3, 5, and 10 Flan tasks and report the average Rouge-L over the merged tasks.}
     \label{tab:tasks_size}
 \end{table}
 
@@ -510,14 +489,18 @@ CP consistently delivered the best performance on ROUGE-L scores. For 5 tasks, T
 % \label{fig:cp_str_interference}
 % \end{wrapfigure}
 
-To study the task interference,  \cite{gargiulo2025task} introduces a score of task interference (termed as \textit{Singular Task Interference}) based on the interplay of TSVs from different tasks:
+\citet{gargiulo2025task} measure task interference with the \textit{Singular Task Interference} (STI) score, which quantifies the overlap between the TSVs of different tasks:
 
 \begin{equation}
     \textbf{STI}\left( \left\{ \Delta_i \right\}_{i=1}^{N} \right) 
 = \left\| \left( U^\top U - I \right) \Sigma \left( V^\top V - I \right) \right\|_1
 \end{equation}
 
-They assume that higher inner product values for $U^TU$ and $V^TV$ imply a higher likelihood \citep{gargiulo2025task}. The intuition is that overlapping singular vectors suggest shared features in the weight space across tasks. Inspired by this, we can reformulate the STI with CP decomposition. To define a CP-based STI metric, we need to assess the interference caused by the interplay of these factor matrices across tasks. The intuition remains that overlapping components (shared features in the weight space) lead to interference when merged. We can adapt the STI by considering the alignment and orthogonality of the factor matrices $a_r$, $b_r$, and $c_r$ across tasks. Then we define the CP-based Singular Task Interference (CP-STI) as:
+Large off-diagonal inner products in $U^{\top}U$ and $V^{\top}V$ indicate that tasks share singular directions, and \citet{gargiulo2025task} associate such overlap with a higher likelihood of interference after merging. We extend this score to CP factors. Overlapping CP components play the same role as overlapping singular vectors, so we measure how far the factor matrices of all three modes deviate from orthogonality and define the CP-based Singular Task Interference (CP-STI) as
+\begin{equation}
+\label{eq:cp_sti}
+  \textbf{CP-STI}(\{\Delta_i\}_{i=1}^N) = \|(A^{\top} A - I) \circ (B^{\top} B - I) \circ (C^{\top} C - I)\|_1,
+\end{equation}
 
 
 
@@ -525,22 +508,11 @@ They assume that higher inner product values for $U^TU$ and $V^TV$ imply a highe
 \begin{figure}[h]
     \centering
     \includegraphics[width=0.7\linewidth]{fig/tsvmerge_sti_across_layers_beautified.png}
-    \caption{STI evaluation in TSV across layers based on 5 flan tasks.}
+    \caption{STI of TSV merging across layers on 5 Flan tasks.}
     \label{fig:sti}
 \end{figure}
-where $A=[a_1, a_2, \ldots, a_R] \in \mathbb{R}^{N \times R}$ is the matrix formed by stacking the task-mode factor vectors $a_r$, $B=[b_1, b_2, \ldots, b_R] \in \mathbb{R}^{d \times R}$ is the matrix of row-mode factors, $C= [c_1, c_2, \ldots, c_R] \in \mathbb{R}^{d \times R}$ is the matrix of column-mode factors, $\circ$ denotes the Hadamard (element-wise) product, $I$ is the identity matrix of appropriate dimension (e.g., $R \times R$). Overlapping factors (high inner products) suggest shared features across tasks, which can introduce interference when the decomposed representations are merged, potentially degrading individual task performance.
+where $A=[\mathbf{a}_1, \ldots, \mathbf{a}_R] \in \mathbb{R}^{N \times R}$, $B=[\mathbf{b}_1, \ldots, \mathbf{b}_R] \in \mathbb{R}^{d_{in} \times R}$, and $C= [\mathbf{c}_1, \ldots, \mathbf{c}_R] \in \mathbb{R}^{d_{out} \times R}$ stack the task-mode, input-mode, and output-mode factors, $\circ$ denotes the Hadamard product, and $I$ is the $R \times R$ identity matrix. A large CP-STI means that components overlap in all three modes at once, so their contributions are hard to separate after merging.
 
-\begin{equation}
-\label{eq:cp_sti}
-  \mathbf{CP-STI}(\{\Delta_i\}_{i=1}^N) = \|(A^T A - I) \circ (B^T B - I) \circ (C^T C - I)\|_1
-\end{equation}
-
-\begin{figure}
-    \centering
-    \includegraphics[width=0.7\linewidth]{fig/cpmergeafter_cp_sti_across_layers_beautified.png}
-    \caption{CP-STI evaluation in CP merging across layers based on 5 flan tasks.}
-    \label{fig:cp_sti}
-\end{figure}
 
 
 
@@ -573,80 +545,55 @@ where $A=[a_1, a_2, \ldots, a_R] \in \mathbb{R}^{N \times R}$ is the matrix form
 \begin{table}[t]
 \centering
 \small
-\begin{tabular}{p{4cm} p{4.8cm} p{1.8cm} p{4.4cm}}
+\begin{tabular}{llc}
 \toprule
-Metric & Statistic & Value & Interpretation \\ 
+Metric & Statistic & Value \\
 \midrule
-STI & Pearson(layer index, STI) & 0.755 & Positive linear trend across depth \\ 
-STI & Spearman(layer index, STI) & 0.807 & Positive monotonic trend across depth \\ 
-STI & mean(qkv\_proj)/mean(o\_proj) & 1.14x & Moderate projection asymmetry \\ 
+STI & Pearson(layer index, STI) & 0.755 \\
+STI & Spearman(layer index, STI) & 0.807 \\
+STI & mean(\texttt{qkv\_proj}) / mean(\texttt{o\_proj}) & 1.14 \\
 \midrule
-CP-STI & Pearson(layer index, log CP-STI) & -0.006 & Near-zero depth trend \\ 
-CP-STI  & Spearman(layer index, log CP-STI) & -0.063 & Near-zero monotonic depth trend \\ 
-CP-STI & mean(qkv\_proj)/mean(o\_proj) & 14.29x & Strong projection/magnitude asymmetry \\ 
-CP-STI column-normalized & Pearson(layer, norm) & 0.306 & STI-comparable scale \\
-CP-STI column-normalized & Spearman(layer, norm) & 0.324 & Moderate depth trend
-\\
-CP-STI off-diagonal & Pearson(layer, offdiag) & 0.420 \\
-CP-STI off-diagonal & Spearman(layer, offdiag) & 0.533 \\
-Diagonal dominance & mean diag fraction & 1.000 & \\
-
-
-
-
-
-
-
-
-
+CP-STI & Pearson(layer index, log CP-STI) & $-0.006$ \\
+CP-STI & Spearman(layer index, log CP-STI) & $-0.063$ \\
+CP-STI & mean(\texttt{qkv\_proj}) / mean(\texttt{o\_proj}) & 14.29 \\
+CP-STI, column-normalized & Pearson(layer index, CP-STI) & 0.306 \\
+CP-STI, column-normalized & Spearman(layer index, CP-STI) & 0.324 \\
+CP-STI, off-diagonal & Pearson(layer index, CP-STI) & 0.420 \\
+CP-STI, off-diagonal & Spearman(layer index, CP-STI) & 0.533 \\
+Diagonal dominance & mean diagonal fraction & 1.000 \\
 \bottomrule
 \end{tabular}
-\caption{Layer-wise interference statistics computed from per-layer TSV-STI and CP-STI. For depth correlation, layer-level scores are obtained by averaging o\_proj and qkv\_proj per layer. For CP-STI, log10 is used before correlation due to multi-order magnitude spread.}
+\caption{Layer-wise interference statistics of STI (TSV merging) and CP-STI (CP merging). For depth correlations, the scores of \texttt{o\_proj} and \texttt{qkv\_proj} are averaged per layer. Raw CP-STI is log10-transformed before computing correlations because its values span several orders of magnitude.}
 \label{tab:interference_rebuttal}
 \end{table}
 
-As shown in the Figure \ref{fig:sti}, we visualize the STI metric across layers with five tasks based on Phi-3. We can notice that STI shows a clear depth thread. Aggregating over o-proj and qkv-proj, STI increases with layer depth (Pearson with layer index $\approx$ 0.755, Spearman $\approx$ 0.807), indicating stronger interference in deeper layers for this run. This conclusion does not match the conclusion int the TSV paper, where the interference is in the lower layer instead of higher layers. In addition, in STI, qkv-proj is consistently higher than o-proj (mean ratio $\approx$=1.14x), and top-interference points are mostly qkv-proj in deeper layers. (17, 19,22-24). As shown in Table \ref{tab:interference_rebuttal}, CP-STI is much larger on qkv-proj than o-proj (mean ratio=14.3x), showing strong layer/projection heterogeneity. Off-diagonal CP-STI has 0.53, and normalized CP-STI has 0.32, indicating the same direction of trend (deeper layers show stronger interference signals.
+Figure~\ref{fig:sti} shows STI across the layers of Phi-3 for five Flan tasks, and Table~\ref{tab:interference_rebuttal} summarizes the layer-wise statistics of STI and CP-STI. Averaged over \texttt{o\_proj} and \texttt{qkv\_proj}, STI increases with depth, both linearly (Pearson correlation with the layer index 0.755) and monotonically (Spearman 0.807), so interference is stronger in deeper layers. This differs from the observation of \citet{gargiulo2025task}, who find interference concentrated in lower layers. STI is also moderately higher on \texttt{qkv\_proj} than on \texttt{o\_proj} (mean ratio 1.14), and the highest values occur on \texttt{qkv\_proj} in layers 17, 19, and 22 to 24.
 
-\begin{figure}
-    \centering
-    \includegraphics[width=\linewidth]{fig/cpmergeafter_cp_sti_l1_vs_fro_across_layers_beautified.png}
-    \caption{left: raw CP-STI, right: off-diagonal CP-STI.}
-    \label{fig:cp-sti-l1-f}
-\end{figure}
+CP-STI (Appendix~\ref{sec:cp_sti_appendix}, Figure~\ref{fig:cp_sti}) shows a much stronger asymmetry between projections: it is 14.29 times larger on \texttt{qkv\_proj} than on \texttt{o\_proj}, so its magnitude is dominated by the projection type. Its values span several orders of magnitude, and after a log transform the raw score has essentially no depth trend (Pearson $-0.006$, Spearman $-0.063$). Normalizing each column brings CP-STI to a scale comparable with STI and recovers a moderate positive depth trend (Pearson 0.306, Spearman 0.324). The off-diagonal CP-STI, which keeps only interactions between different components, correlates more strongly with depth (Pearson 0.420, Spearman 0.533). The mean diagonal fraction of 1.000 shows that the raw score is almost entirely made up of diagonal terms, which depend on the norms of the factor columns rather than on interactions between components; this is why we also report the column-normalized and off-diagonal variants. Once these scale effects are removed, CP-STI agrees with STI that deeper layers show stronger interference. The same layer-wise pattern holds when CP-STI is computed with the Frobenius instead of the L1 norm (Appendix~\ref{sec:cp_sti_appendix}).
 
-We also compared CP-STI computed with L1 and Frobenius norms in Figure \ref{fig:cp-sti-l1-f}. The key observation is that both norms produce highly consistent layer-wise patterns: peaks and valleys occur at the same layers in both panels. Frobenius values are typically lower in magnitude, but the relative ranking across layers is preserved, indicating that the interference signal is not an artifact of a specific norm.
-Importantly, this consistency also holds for the off-diagonal variant: L1-offdiag and Fro-offdiag track each other closely across layers. Therefore, the metric’s conclusion (where interference is stronger/weaker across layers) is norm-robust.
+
 
 
 
 % We study the task interference on each layer according to Eq. (\ref{eq:cp_sti}). As shown in the Fig. \ref{fig:cp_str_interference}, the interference is higher in the lower layer and decreases in the deeper layers. This may indicate that the lower layers capture common features and deeper layers are more specialized for specific tasks. 
 
-\subsection{Rank $R$ of the CP decomposition.}
+\subsection{Rank $R$ of the CP decomposition}
 \label{sec:rank_analyse}
 
-        \begin{wrapfigure}[15]
-        {r}{0.4\textwidth}
-        \vspace{-5pt}
-        \small
+        \begin{figure}[t]
         \centering
-        \includegraphics[width=0.40\textwidth]{fig/CP_rank_vs_ACC.png}
-        \caption{The impact of CP rank on model performance and generation quality for the GSM-8K-hard benchmark.}
+        \includegraphics[width=0.62\textwidth]{fig/cp_rank.pdf}
+        \caption{Effect of the CP rank $R$ on GSM8K-hard: (a) accuracy and (b) number of invalid programs.}
         \label{fig:CP_rank_performance}
-    \end{wrapfigure}
+    \end{figure}
 
-    CP decomposition factorizes a tensor into a sum of $R$ rank‑one components. \citet{wang2023parameter}
-    observed that increasing $R$ can improve performance on cross‑modal tasks. We
-    investigate how the CP rank affects our method’s performance on the GSM8K‑hard
-    dataset (Fig.\ref{fig:CP_rank_performance}). The left plot (“CP Rank vs.
-    Accuracy”) shows accuracy rising from ~0.12 at rank 5 to a peak of ~0.15 at rank
-    20, with no further gains beyond rank 25. This suggests that higher ranks
-    capture richer patterns, but benefits plateau after rank 20. The right plot (“CP
-    Rank vs. Invalid Code”) shows invalid code outputs dropping from ~340 at rank
-    5 to ~200 at rank 20, with little improvement at higher ranks. Overall, increasing
-    the CP rank improves both accuracy and output validity up to an optimal point
-    (around rank 20), after which returns diminish, highlighting the importance
-    of selecting an appropriate rank to balance performance and efficiency in
-    mitigating task interference in skill composition tasks.
+    The rank $R$ sets the number of rank-one components in the CP decomposition. \citet{wang2023parameter}
+    observed that a larger $R$ can improve performance on cross-modal tasks. Figure~\ref{fig:CP_rank_performance}
+    shows the effect of $R$ on GSM8K-hard. Accuracy rises from 11.8\% at rank 5
+    to 16.0\% at rank 20 and slightly decreases at rank 25 (15.69\%, the setting
+    reported in Table~\ref{tab:math-hard}). The number of invalid programs falls
+    from 339 at rank 5 to 195 at rank 20 and changes little at rank 25 (201). A higher rank therefore lets the decomposition
+    retain more of each adapter, but the benefit saturates around rank 20.
 
     % \begin{figure}[h]
     %     \centering
@@ -667,24 +614,22 @@ Importantly, this consistency also holds for the off-diagonal variant: L1-offdia
     % \end{figure}
 
 
-\subsection{Alpha analysis}
+\subsection{Scaling factor $\alpha$}
 
-\begin{wrapfigure}[13]{r}
-{0.4\textwidth}
-\vspace{-15pt}
+\begin{figure}[t]
 \centering
-\includegraphics[width=0.45\textwidth]{fig/rouge_l_heatmap_with_bolder_lines.png}
-\caption{Best performance for different alpha values over 10 held-in Flan datasets. }
+\includegraphics[width=0.6\textwidth]{fig/alpha_heatmap.pdf}
+\caption{Rouge-L of CP merging on the 10 held-in Flan tasks for different values of $\alpha$. Bold marks the best value in each row.}
 \label{fig:alpha}
-\end{wrapfigure}
+\end{figure}
 
-The alpha parameter effectively scales the influence of the adapter's output before it is added back to the weights of the original model. Table~\ref{fig:alpha} reports the ROUGE-L scores for 10 held-in Flan tasks across seven $\alpha$ values ranging from 0.3 to 0.1. The results highlight the critical importance of the $\alpha$ hyperparameter for LoRA merging methods—including CP merging, \texttt{knots}, TSV merging, and ISO merging. Notably, the optimal $\alpha$ is not universal but depends on the specific task, underscoring the need for careful tuning. On average, moderate values (e.g., $\alpha=0.15$–$0.18$) yield the best performance. For all experiments, $\alpha$ was selected based on performance over a validation set of 1,000 examples. Finally, we use 0.25 for TSV merging and 0.50 for Knots. 
+The scaling factor $\alpha$ controls how strongly the merged update is added to the pre-trained weights. Figure~\ref{fig:alpha} reports Rouge-L on the 10 held-in Flan tasks for seven values of $\alpha$ between 0.1 and 0.3. Performance is sensitive to $\alpha$ for all merging methods, including CP merging, Knots, TSV merging, and ISO-C, and the best value differs across tasks. On average, values between 0.15 and 0.18 perform best for CP merging. In all experiments, we select $\alpha$ on a validation set of 1,000 examples, which gives 0.25 for TSV merging and 0.50 for Knots.
 
 \subsection{Computation Cost}
 
 
 
-CP merging conducts the tensor decomposition, while the SVD-based merging conducts the matrix decomposition. In this subsection, we study the computation cost compared to these methods. We compare the computation cost for [3, 5, 10] LoRA adapters. The computation is based on the Phi-3B on Flan datasets. We run experiments using one A100 GPU card. As depicted in Tab.\ref{tab:computation_copmarison}, TSV merging and Knots exhibit substantial growth in cost as the number of LoRA modules increases, reaching up to 1320–1980 seconds with 10 LoRAs. In contrast, CP merging is significantly more efficient, requiring only 31–58 seconds across all settings—an order-of-magnitude improvement over the other baselines.
+CP merging computes one tensor decomposition per layer, whereas the SVD-based methods compute matrix decompositions. Table~\ref{tab:computation_copmarison} reports the wall-clock time to merge 3, 5, and 10 LoRA adapters of Phi-3 trained on Flan tasks, measured on a single A100 GPU. The cost of TSV merging and Knots grows quickly with the number of adapters and reaches 1320 and 1980 seconds for 10 adapters. CP merging takes between 31 and 58 seconds in all settings, which is more than an order of magnitude faster.
 \begin{table}
     \centering
     \begin{tabular}{l|ccc}
@@ -697,25 +642,25 @@ CP merging conducts the tensor decomposition, while the SVD-based merging conduc
      CP merging & \textbf{31s} & \textbf{38s} & \textbf{58s}\\
      \bottomrule
     \end{tabular}
-    \caption{Computation cost (seconds) compared with various LoRA merging approaches. We use Phi-3B as a backbone model. }
+    \caption{Merging time in seconds for different numbers of LoRA adapters on Phi-3.}
     \label{tab:computation_copmarison}
 \end{table}
 
 \section{Discussion}
 
-The current formulation of CP merge assumes a static set of $N$ adapters merged into a third-order tensor $\mathcal{T} \in \mathbb{R}^{N \times d \times d}$. However, in dynamic "Open World" environments, new task-specific adapters are frequently released post-initial merging. A potential concern is the computational overhead of re-performing the full CP decomposition as the task dimension $N$ grows.
+CP merging as formulated above assumes a fixed set of $N$ adapters stacked into a tensor $\mathcal{T} \in \mathbb{R}^{d_{in} \times d_{out} \times N}$. In practice, new adapters are released after a merged model has been built, and recomputing the full CP decomposition each time becomes costly as $N$ grows.
 
-To address this, our framework can be extended to an incremental update strategy. Since the row-mode factor $B$ and column-mode factor $C$ capture the fundamental geometric structures of the weight space across layers, these can be treated as a fixed basis once the initial model is established. For a newly arriving adapter $\Delta_{N+1}$, instead of re-decomposing the entire tensor, we can solve a linear sub-problem to find a new task-mode vector $a_{N+1}$ that minimizes the reconstruction error:
+The decomposition admits a simple incremental update. The input-mode factor $B$ and output-mode factor $C$ describe the subspace shared by the existing adapters, so they can be kept fixed once the initial decomposition is computed. For a new adapter $\Delta_{N+1}$, we then only estimate its task-mode coefficients $\mathbf{a}_{N+1}$ by minimizing the reconstruction error
 
 \begin{equation}
-    \min_{a_{N+1}} \|\Delta_{N+1} - \sum_{r=1}^{R} a_{N+1,r} (b_r \circ c_r)\|_F
+    \min_{\mathbf{a}_{N+1}} \|\Delta_{N+1} - \sum_{r=1}^{R} a_{N+1,r}\, \mathbf{b}_r \otimes \mathbf{c}_r\|_F
 \end{equation}
 
-In this context, $a_{N+1}$ serves as the task coefficient, effectively embedding the new task into the pre-existing shared knowledge space without altering the established parameters of prior models. This approach significantly reduces the computational complexity from full tensor factorization to a simple least-squares projection, ensuring the engineering viability of our method in evolving multi-task systems.
+The coefficients $\mathbf{a}_{N+1}$ embed the new task in the existing shared basis without changing the factors of the previous adapters. This replaces a full tensor factorization with a linear least-squares problem. How well a fixed basis represents adapters from very different tasks remains to be evaluated.
 
 
 \section{Conclusion}
-We propose a novel LoRA merging method using Canonical Polyadic (CP) decomposition. Unlike existing SVD-based methods that decompose each LoRA adapter with matrix decomposition, CP merging factorizes multiple adapters in a unified manner. This allows us to disentangle task-specific components from those that are shared across tasks. Our comprehensive experiments show that CP merging consistently outperforms strong SVD-based baselines across various benchmarks, including in-domain multi-tasks, zero-shot tasks, and skill composition tasks. These results confirm that our method effectively preserves essential task knowledge while significantly reducing cross-task interference. This unified factorization approach is a key advantage over conventional merging techniques. Our findings offer a new perspective on how knowledge is represented and merged within LoRA adapters. 
+We presented CP merging, a LoRA merging method that stacks the adapters of each layer into a third-order tensor and factorizes them jointly with Canonical Polyadic decomposition. SVD-based methods decompose task matrices one at a time or after concatenation; CP merging instead shares input-mode and output-mode factors across tasks and records task contributions in a separate task mode, which separates shared components from task-specific ones. Across held-in and held-out Flan tasks, zero-shot benchmarks, and math-and-code skill composition, CP merging outperforms TSV merging and Knots and is more than an order of magnitude faster to compute. Uniform merging remains competitive on held-out and zero-shot evaluation, so the main benefit of joint factorization lies in preserving task-specific ability while merging many adapters.
 
 
 
@@ -733,13 +678,11 @@ Only add this information once your submission is accepted and deanonymized.
 
 \subsection{Limitations}
 
-In this work, we evaluate our approach on natural language tasks using models such as Phi-3B, Mistral-7B, and LLaMA-7B. Extending the analysis to larger-scale models remains an important direction for future research. Our experiments show that CP merging achieves superior performance compared to SVD-based LoRA merging methods. However, on held-out and zero-shot tasks, uniform merging achieves competitive—and in some cases even better—results, suggesting that improving the generalization ability of LoRA merging methods remains an open challenge. Moreover, our current evaluation is limited to at most 10 tasks. Scaling to a larger number of tasks presents additional challenges for LoRA merging, which we plan to investigate in future work.
+We evaluate CP merging on natural language tasks with Phi-3, Mistral-7B, and LLaMA-7B; larger models are not covered. CP merging outperforms SVD-based LoRA merging, but on held-out and zero-shot tasks uniform merging is competitive and in some cases better, so improving the generalization of LoRA merging remains open. Our Flan experiments merge at most 10 adapters, and merging substantially larger sets of adapters is left for future work.
 
 \paragraph{Use of large language models statement}
 
-We use the LLM to polish the writing. All other parts, including experimental results, analyses 
-were written by the authors and carefully verified for accuracy before and after any LLM-assisted
-editing.
+We used an LLM to polish the writing. All other content, including the experimental results and analyses, was produced by the authors, who verified the text for accuracy before and after any LLM-assisted editing.
 
 
 
@@ -758,29 +701,28 @@ editing.
 
             Reference Answer: 3,431,580 }
         \end{prompt}
-        \caption{The comparison between GSM8k and GSM8k-hard. The GSM8K uses a larger
-        number to replace the original number.}
+        \caption{An example from GSM8K and its GSM8K-hard counterpart. GSM8K-hard
+        replaces the numbers in the original problem with much larger ones.}
         \label{prompt-verifier}
 \end{figure}
 
-    \cite{prabhakar2024lora} have used LoRA merging to achieve the \textit{skill
-    composition}. Skill here refers to specific capabilities that the LLM needs for
-    customization to downstream use cases. For example, achieving a high score in
-    GSM8k benchmark \cite{cobbe2021training} needs good \textit{commonsense} and
-    \textit{arithmetic} skills.
+    \citet{prabhakar2025lora} use LoRA merging for \textit{skill
+    composition}, where a skill is a specific capability that a downstream use
+    case requires. For example, solving GSM8K \citep{cobbe2021training} requires
+    both \textit{commonsense} and \textit{arithmetic} skills.
 
+    We use this setting to test whether reducing task interference helps
+    combine skills, using hard math word problems.
+    GSM8K-hard \citep{gao2023pal} contains the same types of problems as GSM8K
+    \citep{cobbe2021training} but with more complex arithmetic (Fig.~\ref{prompt-verifier}).
+    Following the program-aided approach of \citet{gao2023pal}, the LLM first
+    writes a program as an intermediate reasoning step and then executes it with
+    a Python interpreter to obtain the answer. The task therefore requires
+    mathematical reasoning to analyze the problem and coding to turn the
+    reasoning into executable code. Following \citet{prabhakar2025lora}, we
+    train one LoRA adapter for math and one for code and merge them.
 
-    To explicitly examine how reducing task interference, we evaluate CP merging on hard math word problems.
-    Compared to GSM‑8K \citep{cobbe2021training}, GSM8K‑hard \citep{gao2023pal} contains
-    problems of similar types but with more complex arithmetic operations.
-    \citet{gao2023pal} propose a program‑aided method in which an LLM first generates
-    a program as an intermediate reasoning step and then executes it using a Python
-    interpreter to obtain the final answer. This setting requires the LLM to be
-    proficient in both mathematical reasoning (to analyze the problem) and
-    coding (to translate the reasoning into executable code). Following the same experimental setting in  \citet{prabhakar2024lora},
-    we train separate LoRA adapters for math and code skills.
-
-    \subsubsection{GSM8k-hard Results}
+    \subsubsection{GSM8K-hard Results}
     \begin{table}[h]
         \centering
         \begin{tabular}{l|cc}
@@ -802,35 +744,52 @@ editing.
             \midrule
             \bottomrule
         \end{tabular}
-        \caption{Evaluation results on MATH-hard tasks. "Invalid" is the number of
-        invalid codes that can not be executed by Python.}
+        \caption{Results on GSM8K-hard. ``Invalid Code'' is the number of
+        generated programs that cannot be executed by the Python interpreter.}
         \label{tab:math-hard}
     \end{table}
-    As depicted in Tab. \ref{tab:math-hard}, we evaluate the accuracy scores on
-    the GSM-8k hard benchmark across various models. The base model achieves a modest
-    accuracy of 0.043, highlighting its limitations in tackling GSM-hard tasks
-    effectively. By training a LoRA adapter with the MathQA instruction dataset,
-    we enhance the model's mathematical capabilities. Similarly, training with
-    the Alpaca-code dataset boosts the model's coding proficiency. Combining both
-    MathQA and Alpaca-code datasets in a single adapter yields an accuracy of 0.1349.
-    Merging the math and coding skills through LoRA merging results in an
-    accuracy of 0.1296, demonstrating the potential to integrate these abilities. TSV Merging and Knots perform similarly in terms of accuracy, with scores of 0.1349 and 0.1344, respectively. However, TSV Merging generates fewer invalid codes (224) compared to Knots (263), suggesting it is slightly more stable in this regard.
-    Among the competing baselines, our proposed CP merging achieves the highest accuracy
-    of 0.1569. Additionally, we assess the "invalid code" metrics across methods.
-    Notably, the LoRA code approach reduces invalid code instances from 524 in the
-    base model to 159, indicating improved code quality. 
-
-    The results demonstrate that our CP merging effectively reduces task
-    interference by integrating math and coding skills, as evidenced by the lower
-    number of invalid codes (201) compared to the base model (524) and other methods. In conclusion, CP merging not only achieves the highest accuracy but also maintains a low rate of invalid code generation, clearly demonstrating its superior performance in handling complex math-hard tasks.
+    Table~\ref{tab:math-hard} reports accuracy and the number of invalid
+    programs on GSM8K-hard. The base model reaches an accuracy of only 0.043.
+    A LoRA adapter trained on MathQA improves accuracy to 0.1175, and an adapter
+    trained on Alpaca-code reduces the number of invalid programs from 524 to 159.
+    A single adapter trained on both datasets reaches 0.1349, and uniform merging
+    of the two skill adapters reaches 0.1296. TSV merging and Knots obtain similar
+    accuracy (0.1349 and 0.1344), with fewer invalid programs for TSV merging
+    (224 vs.\ 263). CP merging obtains the highest accuracy of all methods (0.1569),
+    2.2 points above TSV merging and the multi-task adapter, and produces 201
+    invalid programs. This is fewer than every method except the code-only
+    adapter (159), which has much lower accuracy (0.0796). CP merging thus combines
+    the math and code skills with less loss of either than the other merging
+    methods.
 
 
 
 
 
-\subsection{SVD illustration of U and V}
+\subsection{Additional Interference Analysis}
+\label{sec:cp_sti_appendix}
 
-The similarities in the $U$ and $V$ matrices can reflect correlations among different experts. To empirically investigate whether SVD fails to capture inter-task interference, we compute the pairwise cosine similarity of the $U$ and $V$ matrices across five diverse task experts (Figure \ref{fig:SVD_visualization}). As observed in the heatmaps, the off-diagonal similarity scores are consistently low, suggesting that SVD factors are highly task-specific and lack a common orientation. Specifically, the $V$ matrix similarity (right) shows that the input-side features of different tasks are nearly orthogonal. This confirms that a naive merge of SVD-based adapters would result in information conflict, as the model would attempt to project different task logic onto misaligned subspaces.
+Figure~\ref{fig:cp_sti} shows CP-STI across the layers of Phi-3 for the same five Flan tasks as Figure~\ref{fig:sti}.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.7\linewidth]{fig/cpmergeafter_cp_sti_across_layers_beautified.png}
+    \caption{CP-STI of CP merging across layers on 5 Flan tasks.}
+    \label{fig:cp_sti}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{fig/cpmergeafter_cp_sti_l1_vs_fro_across_layers_beautified.png}
+    \caption{CP-STI across layers computed with the L1 and Frobenius norms. Left: raw CP-STI. Right: off-diagonal CP-STI.}
+    \label{fig:cp-sti-l1-f}
+\end{figure}
+
+Figure~\ref{fig:cp-sti-l1-f} compares CP-STI computed with the L1 and Frobenius norms. Both norms produce the same layer-wise pattern, with peaks and valleys at the same layers. Frobenius values are smaller, but the ranking of layers is preserved, and the off-diagonal variants of the two norms also track each other closely. The layer-wise conclusions above therefore do not depend on the choice of norm.
+
+\subsection{Cross-task similarity of SVD and CP factors}
+
+Similarity between the $U$ and $V$ matrices of different experts reflects how much the experts share. To examine how SVD represents cross-task relations, we compute the pairwise cosine similarity of the $U$ and $V$ matrices of five task experts (Figure~\ref{fig:SVD_visualization}). The off-diagonal similarities are low, so the SVD factors of different tasks share little common orientation. The $V$ similarities (right) in particular show that the input-side directions of different tasks are nearly orthogonal. Merging such adapters directly projects different tasks onto misaligned subspaces, which is consistent with the information conflict that SVD-based merging must resolve.
 
 % This observation provides the primary motivation for our CP-based approach, which overcomes this 'basis-mismatch' by factorizing all tasks simultaneously within a higher-order tensor framework, thereby ensuring a consistent and aligned parameter space.
 
@@ -854,36 +813,36 @@ The similarities in the $U$ and $V$ matrices can reflect correlations among diff
             \includegraphics[width=0.30\textwidth]{fig/cpmergeafter_svd_v_cosine_similarity.png}
             % \subcaption{The number of clusters and accuracy (ACC) using Mistral 7B}
         \end{subfigure}
-        \caption{(left): pairwise cosine similarity between task experts using CP Eq.5. Each cell compares the task matrices $\Delta_i,\Delta_j$, highlighting cross-task dependence captured by CP's tri-factor interaction. (2)(mid) similarity between the $U$ matrix in SVD decomposition. (3) similarity between the $V$ matrix in SVD. We use layer 0 in the Phi-3 model and compute the cosine similarity across 5 experts.}
+        \caption{Pairwise cosine similarity between five task experts in layer 0 of Phi-3. Left: similarity between the task matrices $\Delta_i$ and $\Delta_j$ reconstructed from CP factors (Eq.~\ref{eq:cp_form}). Middle: similarity between the SVD $U$ matrices. Right: similarity between the SVD $V$ matrices.}
         \label{fig:SVD_visualization}
     \end{figure}
 
-We added a quantitative cross-task dependence analysis using the off-diagonal entries of pairwise expert-similarity matrices. Specifically, we compare CP-based task representations (Eq. \ref{eq:cp_form} reconstruction) against SVD-based representations (U, V, and their mean). On the tested layer, CP-vs-SVD correlations are only moderate (Pearson: 0.578 vs U, 0.486 vs V, 0.576 vs (U+V)/2; Spearman: 0.305, 0.353, 0.377), and the average absolute discrepancy is non-trivial (0.204). This indicates that SVD and CP induce meaningfully different cross-task dependence structures rather than being equivalent. We also observe that SVD dependence is imbalanced across factors (mean off-diagonal: U=0.348, V=0.068), while CP task vector captures a coherent dependence pattern at the full task-matrix level (0.349). These quantitative results strengthen our motivation for CPD: it models cross-task interactions through a shared tri-factor structure and preserves dependence information beyond what is captured by SVD basis components alone.
+We quantify this comparison with the off-diagonal entries of the pairwise expert-similarity matrices (Figure~\ref{fig:cp_svd_offdiag}). We compare the task matrices reconstructed from CP factors (Eq.~\ref{eq:cp_form}) with the SVD representations $U$, $V$, and their mean. On the tested layer, the CP and SVD similarities are only moderately correlated (Pearson 0.578 with $U$, 0.486 with $V$, and 0.576 with $(U+V)/2$; Spearman 0.305, 0.353, and 0.377), and their mean absolute difference is 0.204. CP and SVD therefore induce different cross-task dependence structures. The SVD dependence is also unbalanced across factors (mean off-diagonal similarity 0.348 for $U$ and 0.068 for $V$), whereas the CP reconstruction yields a single dependence pattern at the level of the full task matrix (0.349). CP decomposition thus models cross-task interaction through factors shared by all tasks and retains dependence information that the separate SVD bases do not.
 
 \begin{figure}[h]
     \centering
-    \includegraphics[width=0.8\linewidth]{fig/cpmergeafter_cp_eq5_vs_svd_offdiag_correlation_pooled.png}
-    \caption{Quantitative cross-task dependence analysis using the off-diagonal entries of pairwise expert-similarity matrices.}
-    \label{fig:placeholder}
+    \includegraphics[width=0.65\linewidth]{fig/cp_svd_offdiag.pdf}
+    \caption{Correlation between the off-diagonal entries of the CP-based and SVD-based expert-similarity matrices, pooled over all layers.}
+    \label{fig:cp_svd_offdiag}
 \end{figure}
 
 
-\subsection{Experimental Setting for Flan tasks and Zero-shot downstream tasks.}
+\subsection{Experimental Setting for Flan and Zero-shot Tasks}
 \label{sec:exp_setting}
 
 \subsubsection{Implementation Details}
 
-For the CP decomposition in our merging algorithm, we use the open-source Python library Tensorly \footnote{https://tensorly.org/dev/modules/generated/tensorly.decomposition.parafac.html}.  CP decomposition is solved using alternating least squares (ALS) via TensorLy’s parafac solver (random initialization, fixed rank $R$, stopping with tolerance \textit{tol} or maximum iterations \textit{n-iter-max}).
+We compute the CP decomposition with the \texttt{parafac} solver of the open-source library TensorLy\footnote{\url{https://tensorly.org/dev/modules/generated/tensorly.decomposition.parafac.html}}, which uses alternating least squares (ALS) with random initialization and a fixed rank $R$, and stops when the change in error falls below a tolerance \texttt{tol} or after \texttt{n\_iter\_max} iterations.
 
 
 \begin{figure}[h]
     \centering
-    \includegraphics[width=0.8\linewidth]{fig/cpmergeafter_cpd_convergence_summary.png}
-    \caption{The CP decomposition based on Phi-3 on LoRA library with 5 experts.}
-    \label{fig:placeholder}
+    \includegraphics[width=0.65\linewidth]{fig/cpd_convergence.pdf}
+    \caption{Convergence of the CP decomposition for a library of 5 LoRA experts on Phi-3: reconstruction error per ALS iteration, averaged over layers (mean $\pm$ std).}
+    \label{fig:cpd_convergence}
 \end{figure}
 
-To provide convergence evidence, we now log the reconstruction error at each ALS iteration and report the corresponding reconstruction MSE between the original tensor X and reconstructed tensor $\hat{X}: \text{MSE}_t = ||X - \hat{X}_t||_F^2 / |X|$ (equivalently computed from TensorLy’s relative reconstruction error trajectory). We include both per-layer convergence curves and an averaged summary across layers (mean ± std over layers), and observe stable monotonic error reduction with saturation after a modest number of iterations. These results support that the CPD optimization in Step 5 is numerically well-behaved and convergent in our setting.
+To monitor convergence, we record the reconstruction error after each ALS iteration $t$ as the mean squared error $\text{MSE}_t = \|\mathcal{T} - \hat{\mathcal{T}}_t\|_F^2 / |\mathcal{T}|$, where $\hat{\mathcal{T}}_t$ is the reconstruction and $|\mathcal{T}|$ the number of entries; it is computed from the relative reconstruction error reported by TensorLy. Figure~\ref{fig:cpd_convergence} shows the error averaged over layers. The error decreases monotonically and saturates after a moderate number of iterations, so the ALS optimization in Algorithm~\ref{al:factorizing} converges stably in our setting.
 
 % \begin{figure}[h]
 %         \centering
@@ -905,21 +864,21 @@ To provide convergence evidence, we now log the reconstruction error at each ALS
 %                 fig/cpmergeafter_cpd_convergence_model.layers.1.self_attn.o_proj.png}
 %             % \subcaption{Clustering based on the sentence embedding. We visualize  100 samples in each cluster.} 
 %         \end{subfigure}
-%         \caption{(left). The number of clusters and accuracy (ACC) using Phi-3 3B. Cluster analysis. The number of clusters and accuracy (ACC) using Mistral 7B. Clustering based on the sentence embedding. We visualize  100 samples in each cluster.}
+%         \caption{Left: accuracy versus number of clusters with Phi-3. Middle: accuracy versus number of clusters with Mistral-7B. Right: sentence embeddings of 100 samples per cluster.}
 %         \label{fig:cluster_performance}
 %     \end{figure}
 
 
 \subsubsection{Datasets and Running Environment Setting}
 
-To enhance the LLM with various abilities for the above tasks, we construct a collection of LoRA adapters on diverse tasks. We use the FlanV2, an instruction-tuning dataset designed to scale both task diversity and model size, which has been shown to improve model performance significantly \citep{chung2024scaling}. We train each LoRA adapter independently, enabling it to specialize in a specific task. Finally, we select 256 tasks \citep{longpre2023flan}, with the majority derived from P3 \citep{bach2022promptsource} and Flan2021 \citep{wei2021finetuned}. 
+We build the LoRA library from FlanV2, an instruction-tuning collection designed to scale task diversity and model size \citep{chung2024scaling}. We select 256 tasks \citep{longpre2023flan}, most of them from P3 \citep{bach2022promptsource} and Flan2021 \citep{wei2021finetuned}, and train one LoRA adapter independently on each task.
 
-To evaluate the effectiveness of our approach across different backbone models, we conduct experiments using Phi-3 \citep{abdin2024phi}, and Mistral-7B(mistralai/Mistral-7B-v0.1) \citep{jiang2023mistral}. In all cases, we apply LoRA adapters exclusively to the attention layers. Unless stated otherwise, our multi-task training and single-task adaptation scenarios employ a LoRA rank of 4, a dropout rate of 0.05, and a learning rate of 1e-4. Each LoRA adapter is trained for 5 epochs on either an H100 or A100 GPU. For the clustering step, we use the \texttt{sentence-transformers/sentence-t5-xxl} model for encoding. Given the typically large size of the dataset, we sample 20\% of the data to train the k-means algorithm and then use the resulting clusters to predict labels for all samples.
+We use Phi-3 \citep{abdin2024phi} and Mistral-7B (\texttt{mistralai/Mistral-7B-v0.1}) \citep{jiang2023mistral} as backbones and apply LoRA only to the attention layers. Unless stated otherwise, multi-task and single-task adapters use LoRA rank 4, dropout 0.05, and learning rate $10^{-4}$, and each adapter is trained for 5 epochs on an H100 or A100 GPU. For the C-LoRA library (Appendix~\ref{sec:clora}), we encode instructions with \texttt{sentence-transformers/sentence-t5-xxl}, fit k-means on a random 20\% of the data, and assign every sample to its nearest cluster.
 
-\subsubsection{10 Held-in and 3 Held out task names}
+\subsubsection{Held-in and Held-out Tasks}
 \label{sec:10_held_in}
 
-There are 256 pre-trained LoRA adapters used in \cite{ostapenko2024towards}. We randomly select 10 tasks as the held-in tasks and 3 tasks as the held-out tasks, followed by \cite{arnob2025exploring}. 
+From the 256 tasks of \citet{ostapenko2024towards}, we randomly select 10 held-in tasks and 3 held-out tasks, following \citet{arnobexploring}.
 
 \paragraph{Held-in tasks}
 
@@ -936,25 +895,25 @@ There are 256 pre-trained LoRA adapters used in \cite{ostapenko2024towards}. We 
     \item yelp\_polarity\_reviews\_0\_2\_0
 \end{itemize}
 
-\paragraph{3 held-out tasks}
+\paragraph{Held-out tasks}
 \begin{itemize}
     \item glue\_sst2\_2\_0\_0
     \item dream\_read\_the\_following\_conversation\_and\_answer\_the\_question
     \item race\_middle\_Read\_the\_article\_and\_answer\_the\_question\_no\_option\_
 \end{itemize}
 
-\subsection{Cross layer analysis.}
+\subsection{Cross-layer analysis}
 
 
 
 \begin{figure}[h]
     \centering
     \includegraphics[width=0.5\linewidth]{fig/cpmergeafter_cross_layer_task_A_l2_heatmap.png}
-    \caption{L2 norm of each task row vs layer.}
+    \caption{L2 norm of each task's row of the task-mode factor $A$ across layers and projections.}
     \label{fig:l2_norm_cross_layer}
 \end{figure}
 
-We summarize each task’s CP mixture at a layer by the L2 norm of its row in A and the entropy of the magnitude-normalized mixture (how peaked vs diffuse the rank weights are). As shown in the Figure \ref{fig:l2_norm_cross_layer}. The heatmap shows that task influence is not uniform across depth: some tasks remain small across most layer–projection slots, while others concentrate in later blocks (notably deeper o\_proj / qkv\_proj rows), indicating that the learned decomposition reflects structured depth dependence rather than i.i.d. local noise. This directly addresses whether “importance” is constant: it is layer- and projection-dependent, with interpretable bands rather than flat profiles.
+We summarize how a task uses the CP components of a layer by the L2 norm of its row in $A$ and by the entropy of the magnitude-normalized row, which measures whether the task relies on a few components or spreads over many. Figure~\ref{fig:l2_norm_cross_layer} shows that task influence varies with depth. Some tasks have small norms in most layer and projection slots, while others concentrate in later blocks, especially in the deeper \texttt{o\_proj} and \texttt{qkv\_proj} slots. The decomposition therefore reflects a structured dependence on depth rather than independent noise per layer, and the importance of a task depends on the layer and projection, forming visible bands rather than flat profiles.
 
 
 \begin{figure}[h]
@@ -964,85 +923,62 @@ We summarize each task’s CP mixture at a layer by the L2 norm of its row in A 
     \label{fig:adjacent_cross_layer}
 \end{figure}
 
-In Figure \ref{fig:adjacent_cross_layer}, we measure the cosine similarity between its A row at layer L and at the next processed layer, then report the mean ± std across tasks for each adjacent pair. The resulting curve is mixed: several transitions show positive mean alignment (e.g. L10 o\_proj → L10 qkv\_proj at 0.535 mean cosine, L27 qkv\_proj → L28 o\_proj at 0.454), while others are near zero or negative with large standard deviations (often 0.3–0.9), reflecting that (i) o\_proj and qkv\_proj are different operators with different induced geometry, and (ii) CP factors have scale/sign/permutation non-identifiability, so A is not guaranteed to be pointwise stable under independent per-layer fits. We therefore interpret this plot as a sanity check for continuity under our layer-wise fitting protocol, not as a claim of a single global latent “task embedding” shared verbatim at every depth.
+For each task, Figure~\ref{fig:adjacent_cross_layer} reports the cosine similarity between its row of $A$ in one slot and in the next processed slot, as mean $\pm$ std over tasks. Several transitions show positive mean alignment, for example 0.535 from \texttt{o\_proj} to \texttt{qkv\_proj} in layer 10 and 0.454 from \texttt{qkv\_proj} in layer 27 to \texttt{o\_proj} in layer 28. Other transitions are near zero or negative, with standard deviations often between 0.3 and 0.9. Two factors explain this variation. \texttt{o\_proj} and \texttt{qkv\_proj} are different operators with different geometry, and CP factors are identifiable only up to scaling, sign, and permutation, so $A$ need not be stable across independently fitted layers. We therefore read this plot as a continuity check for layer-wise fitting, not as evidence of a single task embedding shared across all depths.
 
 
 \begin{figure}[h]
     \centering
     \includegraphics[width=\linewidth]{fig/cpmergeafter_cross_layer_BC_rank_alignment_adjacent.png}
-    \caption{Rank-1 feature across depth. |cos| means the absolute value of the cosine similarity between two column vectors of the CP factor matrices B or C (after each column is L2-normalized).}
+    \caption{Alignment of rank-one components across depth. $|\cos|$ is the absolute cosine similarity between matched L2-normalized columns of the CP factor matrices $B$ or $C$ in adjacent layers.}
     \label{fig:bc_bank}
 \end{figure}
 
-Because CP rank order is arbitrary within each layer, we report Hungarian alignment of normalized factor columns between consecutive transformer indices within the same projection family (o\_proj vs qkv\_proj). As shown in the Figure \ref{fig:bc_bank}, the results are split by factor and projection: for B on qkv\_proj, matched |cos| between adjacent layers is typically moderate to high (often 0.37–0.84, e.g. peak ~0.84 at L25→L26), suggesting recurring rank-1 directions in the input mode along depth for QKV adapters. For B on o\_proj, matched |cos| is much lower (often ~0.01–0.04), indicating that rank labels are not vertically stable for output projections under independent CPD—consistent with known CP identifiability limits. For C, o\_proj shows higher adjacent matched similarity than qkv\_proj (e.g. many o\_proj pairs in the 0.4–0.7 range vs qkv\_proj often ~0.006–0.02), so “vertical semantics” of rank-1 components must be stated separately for each factor and each projection type.
+Because the order of CP components within a layer is arbitrary, we match the normalized factor columns of consecutive layers with the Hungarian algorithm, separately for \texttt{o\_proj} and \texttt{qkv\_proj}. Figure~\ref{fig:bc_bank} shows that the results differ by factor and projection. For $B$ on \texttt{qkv\_proj}, the matched $|\cos|$ between adjacent layers is moderate to high, often between 0.37 and 0.84 with a peak of about 0.84 from layer 25 to layer 26, which suggests recurring rank-one input directions along depth for QKV adapters. For $B$ on \texttt{o\_proj}, the matched $|\cos|$ is much lower, often between 0.01 and 0.04, so the components of output projections are not stable across independently decomposed layers, as expected from the identifiability limits of CP decomposition. For $C$, \texttt{o\_proj} shows higher matched similarity than \texttt{qkv\_proj}, with many \texttt{o\_proj} pairs between 0.4 and 0.7 and \texttt{qkv\_proj} pairs often between 0.006 and 0.02. Whether a rank-one component keeps its meaning across depth must therefore be assessed separately for each factor and projection type.
     
 
     \subsection{Clusterized LoRA Library (C-LoRA)}
     \label{sec:clora}
 
-    As noted in \cite{ostapenko2024towards}, LoRA similarity can contribute to positive transfer. Their approach clusters tasks based on LoRA similarity, requiring the \textit{task ID} for each example and the pre-training of a collection of LoRA adapters before clustering. In contrast, we argue that text-level clustering is more convenient while achieving competitive results. As shown in Fig. \ref{fig:cluster_performance}, we select 100 examples per cluster and visualize their embeddings. The embeddings reveal that similar texts are grouped into the same clusters, demonstrating the quality of our embedding representations.
+    \citet{ostapenko2024towards} show that grouping tasks by LoRA similarity leads to positive transfer. Their clustering requires the \textit{task ID} of every example and a trained adapter for every task before clustering. We instead cluster at the text level, which needs neither and achieves competitive results. Figure~\ref{fig:cluster_performance}(c) visualizes the embeddings of 100 examples per cluster; similar texts fall into the same clusters.
 
-    To mitigate task conflicts at the \textit{text-level}, we train each \textit{expert}
-    on a collection of similar tasks. This is achieved by clustering instructions
-    and partitioning the training data into multiple clusters without requiring manual
-    intervention. Clustering input texts into several groups can reduce task
-    interference by allowing the model to adapt its task adapters or
-    representations to distinct subsets of data with similar characteristics. Formally,
+    To reduce task conflicts at the \textit{text level}, we train each \textit{expert}
+    on a group of similar tasks obtained by clustering the instructions, without
+    manual intervention. Each adapter then specializes in a subset of data with
+    similar characteristics, which can reduce interference within its training data. Formally,
     let $E(\cdot)$ denote a pretrained sentence encoder. For each data sample,
     the sentence representation of an instruction $I_{i}$ is computed as
     $e_{i}=E(I_{i})$. We then apply the k-means algorithm to cluster all instruction
     embeddings $\{e_{i}\}$ in the training dataset into $K$ clusters. We train
     each LoRA adapter based on the instructions from each cluster. For each pre-trained
     weight $W_{0}$, we obtain corresponding LoRA adapters
-    $\{A_{i}B_{i},...,A_{K}B_{K}\}$.
-    \subsubsection{Clustering to reduce the task interference at the text-level}
+    $\{B_{1}A_{1},\ldots,B_{K}A_{K}\}$.
+    \subsubsection{Effect of the number of clusters}
     \label{sec:clustering}
 
     \begin{figure}[h]
         \centering
-        \begin{subfigure}
+        \includegraphics[width=0.64\textwidth]{fig/cluster_acc.pdf}\hfill
+        \begin{minipage}[b]{0.33\textwidth}
             \centering
-            \includegraphics[width=0.3\textwidth]{fig/Cluster_num_vs_ACC_phi3.png}
-            % \subcaption{The number of clusters and accuracy (ACC) using Phi-3 3B}
-        \end{subfigure}
-        \hfill
-        \begin{subfigure}
-            \centering
-            \includegraphics[width=0.3\textwidth]{
-                fig/Cluster_num_vs_ACC_mistral.png
-            }
-            % \subcaption{The number of clusters and accuracy (ACC) using Mistral 7B}
-        \end{subfigure}
-        \hfill
-        \begin{subfigure}
-            \centering
-            \includegraphics[width=0.3\textwidth]{
-                fig/3d_visualization_embedding.png
-            }
-            % \subcaption{Clustering based on the sentence embedding. We visualize  100 samples in each cluster.} 
-        \end{subfigure}
-        \caption{(left). The number of clusters and accuracy (ACC) using Phi-3 3B. Cluster analysis. The number of clusters and accuracy (ACC) using Mistral 7B. Clustering based on the sentence embedding. We visualize  100 samples in each cluster.}
+            {\small\textbf{(c) Instruction embeddings}}\\[2pt]
+            \includegraphics[width=\linewidth]{fig/embedding_3d.png}
+        \end{minipage}
+        \caption{Effect of the number of clusters $K$ on zero-shot accuracy with (a) Phi-3 and (b) Mistral-7B. (c) Sentence embeddings of 100 instructions per cluster, colored by cluster ($K=10$).}
         \label{fig:cluster_performance}
     \end{figure}
 
-    The Fig. \ref{fig:cluster_performance} shows the relationship between the
-    number of clusters and accuracy (ACC) using two different model backbones: Phi-3
-    3B (left) and Mistral 7B (right). For the Phi-3 3B backbone, accuracy increases
-    from approximately 65.4\% at 1 cluster to a peak of 68.9\% at 10 clusters,
-    stabilizing thereafter up to 15 clusters. In contrast, the Mistral 7B
-    Backbone shows a more gradual improvement, rising from 63.1\% at 1 cluster
-    to 64.9\% at 10 clusters. We think it is still a challenge to determine the
-    ideal number of clusters. Further investigation with more sophisticated clustering
-    techniques could provide deeper insights into the relationship between performance
-    and the number of clusters.
+    Figure~\ref{fig:cluster_performance} shows accuracy as a function of the
+    number of clusters for Phi-3 (a) and Mistral-7B (b). With Phi-3,
+    accuracy increases from about 65.4\% with 1 cluster to 68.9\% with 10
+    clusters and stays at this level up to 15 clusters. With Mistral-7B, accuracy
+    rises more gradually, from 63.1\% with 1 cluster to 64.9\% with 10 clusters.
+    Choosing the number of clusters automatically remains an open question.
 
 
 \subsection{Zero-shot Results on Mistral 7B}
 \label{sec:zero_shot_mistral}
 
-For the Mistral (7B) model, the multi-task
-version achieves a notable improvement, raising the accuracy from 59.5\% to
-    63.1\%.
+Table~\ref{tab:zeroshot_mistral} reports zero-shot results with Mistral-7B. Unlike on Phi-3, the multi-task adapter improves over the base model, from 59.5\% to 63.1\%. With the C-LoRA library, CP merging obtains the highest average accuracy (65.0\%), followed by uniform merging (64.9\%).
 \begin{table*}[ht]
 \small
 \centering
@@ -1076,7 +1012,7 @@ version achieves a notable improvement, raising the accuracy from 59.5\% to
 \Xhline{1.6pt}
 \end{tabular}
 \end{adjustbox}
-\caption{10 downstream Zero-shot results based on Mistral 7B.}
+\caption{Zero-shot accuracy on 10 downstream benchmarks with Mistral-7B.}
 \label{tab:zeroshot_mistral}
 \end{table*}
 
