@@ -6,42 +6,41 @@
         \caption{Implementation of CP Merging}
         \algsetup{linenosize=\small} % Adjust line number size
         \begin{algorithmic}[1] % The [1] here means line numbers will be shown starting from 1
-            \STATE Input: Pretrained task LoRA adapters$\{\Delta_{1},\Delta_{2},..., \Delta_{N}\}$, scaling factors $\alpha$. 
-            \STATE \textbf{Output:
-            Merged weight $W_{\mathrm{MT}}$} 
+            \STATE \textbf{Input:} task LoRA updates $\{\Delta_{1},\Delta_{2},\ldots, \Delta_{N}\}$, CP rank $R$, scaling factor $\alpha$.
+            \STATE \textbf{Output:} merged weight $W_{\text{merged}}$
             
             % \STATE $E=[]$ 
 
             % \FOR{$i = 1$ to $N$} \STATE $\Delta_{i}$=Train($\mathcal{C}_{i}$, LLM)
             % \ENDFOR
 
-            \STATE \textbf{Concatenate} the matrices: \STATE $\mathcal{T}\leftarrow
-            [\Delta_{1}|\Delta_{2}|...|\Delta_{N}]$
+            \STATE \textbf{Stack} the task matrices along the task mode: \STATE $\mathcal{T}\leftarrow
+            [\Delta_{1}|\Delta_{2}|\ldots|\Delta_{N}]$
 
             \STATE \textbf{CP Decomposition:}
 
             \STATE
-            $\mathcal{T}\approx \sum_{r=1}^{R}\mathbf{a}_{r}\otimes \mathbf{b}_{r}
-            \otimes \mathbf{c}_{r}$
+            $\mathcal{T}\approx \sum_{r=1}^{R}\mathbf{b}_{r}\otimes \mathbf{c}_{r}
+            \otimes \mathbf{a}_{r}$
             (Eq. \ref{eq:cp_decomposition})
 
-            \STATE \textbf{Compute the Task Matrix:}
+            \STATE \textbf{Task matrices:}
 
             \STATE
             $\Delta_{i}\approx \sum_{r=1}^{R}a_{ir}\textbf{b}_{r}\otimes \textbf{
              c}_{r}$
             \quad\quad (Eq.\ref{eq:cp_form})
 
-            \STATE \textbf{Reconstruct} the merged matrix:
+            \STATE \textbf{Merge} over the task mode:
 
             \STATE $\Delta \approx \sum_{r=1}^{R}\left( \sum_{i=1}^{N}a_{ir}\right
             ) \textbf{b}_{r}\otimes \textbf{c}_{r}$ \quad (Eq.
             \ref{eq:cp_merge})
 
-            \STATE \textbf{Construct} the merged model weights: \STATE
+            \STATE \textbf{Construct} the merged weights: \STATE
             $W_{\mathrm{merged}}=W_{\text{base}}+\alpha\sum_{r=1}^{R}\left( \sum_{i=1}^{N}a_{ir}\right
             ) \textbf{b}_{r}\otimes \textbf{c}_{r}$
-            \STATE \textbf{return} $W_{\mathrm{MT}}$
+            \STATE \textbf{return} $W_{\text{merged}}$
         \end{algorithmic}
         \label{al:factorizing}
     \end{algorithm}
